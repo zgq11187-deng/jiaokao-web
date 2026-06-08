@@ -1,0 +1,21 @@
+{
+  "name": "jiaokao-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "教考智联 Web：Qwen 原始页 + Codex Agent A/B/C + Notion/SQLite 同步",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
+    "dev:server": "npm -w apps/server run dev",
+    "dev:web": "npm -w apps/web run dev",
+    "build": "npm -w apps/web run build && npm -w apps/server run build",
+    "start": "npm -w apps/server run start",
+    "check": "npm -w apps/web run build && npm -w apps/server run check"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

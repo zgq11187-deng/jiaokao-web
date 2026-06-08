@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["questions", "warnings", "summary"],
+  "properties": {
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stem", "type", "options", "answer", "analysis", "difficulty", "source", "year", "knowledgeTags"],
+        "properties": {
+          "stem": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": ["单选题", "多选题", "判断题", "简答题", "操作题"]
+          },
+          "options": { "type": "string" },
+          "answer": { "type": "string" },
+          "analysis": { "type": "string" },
+          "difficulty": {
+            "type": "string",
+            "enum": ["易", "中", "难"]
+          },
+          "source": { "type": "string" },
+          "year": { "type": "string" },
+          "knowledgeTags": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "summary": { "type": "string" }
+  }
+}

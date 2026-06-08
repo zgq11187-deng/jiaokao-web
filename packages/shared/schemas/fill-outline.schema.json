@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["newOutlinePoints", "oldOutlinePoints", "changeType", "changeDescription", "keyPoints", "hardPoints", "warnings"],
+  "properties": {
+    "newOutlinePoints": { "type": "string" },
+    "oldOutlinePoints": { "type": "string" },
+    "changeType": {
+      "type": "string",
+      "enum": ["新增", "删除", "调整", "要求提升", "要求降低", "无变化"]
+    },
+    "changeDescription": { "type": "string" },
+    "keyPoints": { "type": "string" },
+    "hardPoints": { "type": "string" },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

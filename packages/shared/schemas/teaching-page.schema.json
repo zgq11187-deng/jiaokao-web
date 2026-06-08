@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["markdown", "sourceSections", "addedSections", "warnings", "summary"],
+  "properties": {
+    "markdown": { "type": "string" },
+    "sourceSections": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "addedSections": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "summary": { "type": "string" }
+  }
+}

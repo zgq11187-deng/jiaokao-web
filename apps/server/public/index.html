@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>教考智联 Web</title>
+  <style>
+    body{margin:0;background:#eef4f8;color:#0f172a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}
+    .shell{display:grid;grid-template-columns:340px 1fr;min-height:100vh}
+    aside{background:rgba(255,255,255,.9);border-right:1px solid #dbe4ee;padding:24px;display:grid;align-content:start;gap:16px}
+    main{padding:42px 54px}
+    h1{font-size:34px;margin:6px 0 22px} h2,h3{margin:0}
+    input,button{font:inherit;border-radius:8px}
+    input{width:100%;border:1px solid #d7e1ef;padding:11px;box-sizing:border-box}
+    button{border:1px solid #cbd5e1;background:#fff;padding:11px 14px;font-weight:800;cursor:pointer}
+    button.primary{background:#4f46e5;color:#fff;border-color:#4f46e5}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .card,.panel{background:rgba(255,255,255,.88);border:1px solid #dbe4ee;border-radius:8px;padding:18px;box-shadow:0 18px 40px rgba(15,23,42,.05)}
+    .grid{display:grid;grid-template-columns:repeat(3,minmax(230px,1fr));gap:18px}
+    .stack{display:grid;gap:10px}.list{display:grid;gap:8px;max-height:60vh;overflow:auto}
+    .list button{text-align:left;display:grid;gap:4px}.list button.active{background:#fff7ed;border-color:#f59e0b}
+    .muted{color:#64748b;font-size:13px}.error{background:#fef2f2;color:#b91c1c;padding:12px;border-radius:8px;margin:14px 0}
+    .ok{background:#eff6ff;color:#1d4ed8;padding:12px;border-radius:8px;margin:14px 0}
+    pre{white-space:pre-wrap;word-break:break-word;line-height:1.75;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:18px;max-height:650px;overflow:auto}
+    @media(max-width:1000px){.shell{grid-template-columns:1fr}.grid{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid #dbe4ee}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div>
+        <h2>教考智联 Web</h2>
+        <div class="muted">Qwen + Codex Agent + Notion</div>
+      </div>
+      <section class="card stack">
+        <input id="newTitle" placeholder="章节标题">
+        <div class="row">
+          <input id="chapterNo" placeholder="章">
+          <input id="sectionNo" placeholder="节">
+        </div>
+        <button class="primary" onclick="createChapter()">新建章节</button>
+      </section>
+      <button onclick="loadChapters()">刷新章节</button>
+      <nav id="chapters" class="list"></nav>
+    </aside>
+    <main>
+      <div class="muted">专升本《计算机应用基础》</div>
+      <h1 id="title">请选择或新建章节</h1>
+      <div id="message"></div>
+      <section class="grid">
+        <div class="card stack">
+          <h3>1. Qwen 原始页面</h3>
+          <input id="files" type="file" multiple>
+          <button class="primary" onclick="uploadRaw()">生成 Markdown 原始页</button>
+          <div class="muted">支持图片、PDF、CSV、TXT、MD</div>
+        </div>
+        <div class="card stack">
+          <h3>2. Codex Agent A/B/C</h3>
+          <button onclick="runStep('fill-outline')">A 自动填充考点</button>
+          <button onclick="runStep('import-exam-questions')">B 真题自动入库</button>
+          <button onclick="runStep('generate-teaching-page')">C 生成教学页</button>
+          <button class="primary" onclick="runStep('generate-all')">一键执行 A/B/C</button>
+        </div>
+        <div class="card stack">
+          <h3>3. 导出</h3>
+          <button onclick="exportKind('ppt')">导出演示 PPT</button>
+          <button onclick="exportKind('site')">导出教学网页</button>
+          <button onclick="exportKind('question-bank')">导出章节题库</button>
+          <button onclick="exportKind('markdown')">导出 Markdown</button>
+        </div>
+      </section>
+      <section class="grid" style="margin-top:18px">
+        <div class="panel"><h3>原始页面</h3><div id="rawPages" class="stack"></div></div>
+        <div class="panel"><h3>考点分析</h3><div id="outlines" class="stack"></div></div>
+        <div class="panel"><h3>真题</h3><div id="questions" class="stack"></div></div>
+      </section>
+      <section class="panel" style="margin-top:18px">
+        <h3>章节教学页预览</h3>
+        <pre id="preview">还没有教学页。</pre>
+      </section>
+    </main>
+  </div>
+  <script>
+    const API = location.origin;
+    let chapters = [];
+    let selectedId = null;
+    function msg(text, type='ok'){document.getElementById('message').innerHTML=text?`<div class="${type}">${text}</div>`:''}
+    async function api(path, options){const r=await fetch(API+path, options); const d=await r.json().catch(()=>({})); if(!r.ok||d.ok===false) throw new Error(d.error||'请求失败'); return d}
+    async function loadChapters(){const d=await api('/api/chapters'); chapters=d.chapters||[]; if(!selectedId&&chapters[0]) selectedId=chapters[0].id; renderChapters(); if(selectedId) loadDetail()}
+    function renderChapters(){document.getElementById('chapters').innerHTML=chapters.map(c=>`<button class="${c.id===selectedId?'active':''}" onclick="selectChapter(${c.id})"><strong>${c.title}</strong><span class="muted">${c.status||'待生成'}</span></button>`).join('')}
+    function selectChapter(id){selectedId=id; renderChapters(); loadDetail()}
+    async function createChapter(){try{const title=document.getElementById('newTitle').value.trim(); if(!title) throw new Error('请输入章节标题'); const d=await api('/api/chapters',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,chapterNo:chapterNo.value,sectionNo:sectionNo.value})}); selectedId=d.chapter.id; newTitle.value=''; chapterNo.value=''; sectionNo.value=''; await loadChapters()}catch(e){msg(e.message,'error')}}
+    async function loadDetail(){const d=await api('/api/chapters/'+selectedId); document.getElementById('title').textContent=d.chapter.title; rawPages.innerHTML=(d.rawPages||[]).map(p=>`<article><strong>${p.title}</strong><div class="muted">${p.source_name||''}</div></article>`).join('')||'<p class="muted">暂无</p>'; outlines.innerHTML=d.outlines?.[0]?`<pre>${d.outlines[0].key_points||''}</pre>`:'<p class="muted">暂无</p>'; questions.innerHTML=(d.questions||[]).slice(0,8).map(q=>`<article><strong>${q.type}</strong><div>${q.stem}</div></article>`).join('')||'<p class="muted">暂无</p>'; preview.textContent=d.teachingPages?.[0]?.markdown||'还没有教学页。'}
+    async function uploadRaw(){try{if(!selectedId) throw new Error('请先选择章节'); const input=document.getElementById('files'); if(!input.files.length) throw new Error('请选择文件'); msg('Qwen 生成中...'); const form=new FormData(); [...input.files].forEach(f=>form.append('files',f)); await api(`/api/chapters/${selectedId}/raw-pages/from-file`,{method:'POST',body:form}); input.value=''; msg('原始页面已生成'); await loadDetail()}catch(e){msg(e.message,'error')}}
+    async function runStep(step){try{if(!selectedId) throw new Error('请先选择章节'); msg('执行中：'+step); await api(`/api/chapters/${selectedId}/${step}`,{method:'POST'}); msg('完成：'+step); await loadDetail(); await loadChapters()}catch(e){msg(e.message,'error')}}
+    function exportKind(kind){if(!selectedId)return; location.href=`/api/chapters/${selectedId}/export/${kind}`}
+    loadChapters().catch(e=>msg(e.message,'error'));
+  </script>
+</body>
+</html>

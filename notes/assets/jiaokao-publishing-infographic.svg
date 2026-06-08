@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100" role="img" aria-labelledby="title desc">
+  <title id="title">教考智联网页发布路线信息图</title>
+  <desc id="desc">围绕部署、SEO、GEO、数据分析和上线首周节奏整理的教考智联第一版发布信息图。</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .ink { fill: #172033; }
+      .muted { fill: #5d697c; }
+      .blue { fill: #2563eb; }
+      .teal { fill: #0f766e; }
+      .green { fill: #15803d; }
+      .orange { fill: #c2410c; }
+      .purple { fill: #7c3aed; }
+      .card { fill: #ffffff; stroke: #d9e1ec; stroke-width: 2; }
+      .warn { fill: #fff7ed; stroke: #fed7aa; stroke-width: 2; }
+      .good { fill: #ecfdf5; stroke: #bbf7d0; stroke-width: 2; }
+      .soft-blue { fill: #eff6ff; stroke: #bfdbfe; stroke-width: 2; }
+      .soft-purple { fill: #f5f3ff; stroke: #ddd6fe; stroke-width: 2; }
+      .soft-teal { fill: #f0fdfa; stroke: #99f6e4; stroke-width: 2; }
+      .h1 { font: 800 46px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; letter-spacing: 0; }
+      .h2 { font: 800 28px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; letter-spacing: 0; }
+      .h3 { font: 750 22px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; letter-spacing: 0; }
+      .body { font: 500 19px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; letter-spacing: 0; }
+      .small { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; letter-spacing: 0; }
+      .tiny { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; letter-spacing: 0; }
+      .badge-text { font: 800 16px -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; letter-spacing: 0; fill: #ffffff; }
+      .line { stroke: #9aa8bd; stroke-width: 3; stroke-linecap: round; }
+      .arrow { fill: none; stroke: #64748b; stroke-width: 3; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#64748b" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="1100"/>
+
+  <text class="h1 ink" x="70" y="88">教考智联网页发布路线</text>
+  <text class="body muted" x="72" y="124">从本地可运行，到线上可访问、可收录、可分析、可迭代</text>
+
+  <rect class="warn" x="1020" y="50" width="500" height="120" rx="18"/>
+  <text class="h3 orange" x="1050" y="92">核心判断</text>
+  <text class="small ink" x="1050" y="122">教考智联不是纯静态站：</text>
+  <text class="small ink" x="1050" y="148">Express + SQLite + 上传 + 登录 + AI 长任务</text>
+
+  <rect class="card" x="70" y="190" width="360" height="240" rx="18"/>
+  <rect class="blue" x="95" y="214" width="86" height="30" rx="15"/>
+  <text class="badge-text" x="122" y="235">01</text>
+  <text class="h2 ink" x="95" y="284">部署底座</text>
+  <text class="body ink" x="95" y="326">首选 VPS 一体化部署</text>
+  <text class="small muted" x="95" y="360">Nginx 托管前端 dist</text>
+  <text class="small muted" x="95" y="388">/api 反向代理 Express</text>
+  <text class="small muted" x="95" y="416">SQLite、uploads、日志可备份</text>
+
+  <rect class="card" x="490" y="190" width="360" height="240" rx="18"/>
+  <rect class="teal" x="515" y="214" width="86" height="30" rx="15"/>
+  <text class="badge-text" x="542" y="235">02</text>
+  <text class="h2 ink" x="515" y="284">SEO 基础</text>
+  <text class="body ink" x="515" y="326">先做公开页，不做全站暴露</text>
+  <text class="small muted" x="515" y="360">title / description / H1</text>
+  <text class="small muted" x="515" y="388">robots.txt / sitemap.xml</text>
+  <text class="small muted" x="515" y="416">移动端、性能、描述性链接</text>
+
+  <rect class="card" x="910" y="190" width="360" height="240" rx="18"/>
+  <rect class="purple" x="935" y="214" width="86" height="30" rx="15"/>
+  <text class="badge-text" x="962" y="235">03</text>
+  <text class="h2 ink" x="935" y="284">GEO / AI 可见性</text>
+  <text class="body ink" x="935" y="326">让 AI 说得清你是谁</text>
+  <text class="small muted" x="935" y="360">llms.txt 说明身份与边界</text>
+  <text class="small muted" x="935" y="388">公开 FAQ 和样例章节</text>
+  <text class="small muted" x="935" y="416">AI 自检：哪里表达模糊？</text>
+
+  <rect class="card" x="70" y="490" width="360" height="250" rx="18"/>
+  <rect class="green" x="95" y="514" width="86" height="30" rx="15"/>
+  <text class="badge-text" x="122" y="535">04</text>
+  <text class="h2 ink" x="95" y="584">数据分析</text>
+  <text class="body ink" x="95" y="626">不要只问“好不好看”</text>
+  <text class="small muted" x="95" y="660">写 analytics.md</text>
+  <text class="small muted" x="95" y="688">学生路径：注册 -> 学习 -> 练习</text>
+  <text class="small muted" x="95" y="716">老师路径：生成 -> 检查 -> 导出</text>
+
+  <rect class="card" x="490" y="490" width="360" height="250" rx="18"/>
+  <rect class="orange" x="515" y="514" width="86" height="30" rx="15"/>
+  <text class="badge-text" x="542" y="535">05</text>
+  <text class="h2 ink" x="515" y="584">上线首周</text>
+  <text class="body ink" x="515" y="626">上线是观察的开始</text>
+  <text class="small muted" x="515" y="660">Day 0 检查部署和链接</text>
+  <text class="small muted" x="515" y="688">Day 1 提交 sitemap 和统计</text>
+  <text class="small muted" x="515" y="716">Day 2-7 访谈、修 bug、小迭代</text>
+
+  <rect class="card" x="910" y="490" width="360" height="250" rx="18"/>
+  <rect class="blue" x="935" y="514" width="86" height="30" rx="15"/>
+  <text class="badge-text" x="962" y="535">06</text>
+  <text class="h2 ink" x="935" y="584">文档驱动</text>
+  <text class="body ink" x="935" y="626">让 AI 按规范协作</text>
+  <text class="small muted" x="935" y="660">BRIEF / PRD / ARCHITECTURE</text>
+  <text class="small muted" x="935" y="688">llms.txt / analytics.md</text>
+  <text class="small muted" x="935" y="716">部署清单和反馈报告持续更新</text>
+
+  <path class="arrow" d="M430 310 H480"/>
+  <path class="arrow" d="M850 310 H900"/>
+  <path class="arrow" d="M1090 430 V480"/>
+  <path class="arrow" d="M910 615 H860"/>
+  <path class="arrow" d="M490 615 H440"/>
+  <path class="arrow" d="M250 490 V440"/>
+
+  <rect class="soft-blue" x="70" y="790" width="470" height="230" rx="18"/>
+  <text class="h2 blue" x="100" y="838">公开可收录</text>
+  <text class="body ink" x="100" y="880">首页 / 关于课程 / 资源说明 / FAQ</text>
+  <text class="body ink" x="100" y="914">公开章节目录或样例章节</text>
+  <text class="small muted" x="100" y="956">目标：搜索引擎和 AI 能理解平台定位、</text>
+  <text class="small muted" x="100" y="982">目标用户、课程范围、使用方式和边界。</text>
+
+  <rect class="soft-purple" x="570" y="790" width="470" height="230" rx="18"/>
+  <text class="h2 purple" x="600" y="838">禁止或不建议收录</text>
+  <text class="body ink" x="600" y="880">教师后台 / 学生记录 / 练习详情</text>
+  <text class="body ink" x="600" y="914">AI 草稿 / API / 未授权课程内容</text>
+  <text class="small muted" x="600" y="956">注意：robots 只是爬虫规则，真正敏感内容</text>
+  <text class="small muted" x="600" y="982">仍必须靠登录鉴权保护。</text>
+
+  <rect class="soft-teal" x="1070" y="790" width="450" height="230" rx="18"/>
+  <text class="h2 teal" x="1100" y="838">第一版成功标准</text>
+  <text class="body ink" x="1100" y="880">系统稳定跑起来</text>
+  <text class="body ink" x="1100" y="914">学生和老师走通核心路径</text>
+  <text class="body ink" x="1100" y="948">公开页可被理解，受保护页不泄露</text>
+  <text class="small muted" x="1100" y="986">用数据决定下一轮，不凭感觉大改。</text>
+
+  <text class="tiny muted" x="70" y="1060">生成于 2026-06-08 · 基于 Agent Lab 建站第 4 课直播内容与教考智联当前架构整理</text>
+</svg>
