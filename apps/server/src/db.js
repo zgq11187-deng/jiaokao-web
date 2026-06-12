@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS chapters (
   notion_page_id TEXT UNIQUE,
   notion_url TEXT,
   status TEXT DEFAULT '待生成',
+  student_visible INTEGER NOT NULL DEFAULT 0 CHECK(student_visible IN (0, 1)),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -132,6 +133,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 `);
 
 migrateExamQuestionUniqueConstraint();
+migrateChapterStudentVisible();
+
+function migrateChapterStudentVisible() {
+  const columns = db.prepare(`PRAGMA table_info(chapters)`).all();
+  if (columns.some((column) => column.name === "student_visible")) return;
+  db.exec(`ALTER TABLE chapters ADD COLUMN student_visible INTEGER NOT NULL DEFAULT 0`);
+}
 
 function migrateExamQuestionUniqueConstraint() {
   const table = db.prepare(

@@ -75,7 +75,7 @@ project/
 
 现有核心表：
 
-- `chapters`：章节
+- `chapters`：章节，包含 `student_visible` 控制是否开放给学生
 - `raw_pages`：Qwen 生成的 Markdown 原始页
 - `outline_analyses`：A 自动填充考点结果
 - `exam_questions`：B 真题入库结果
@@ -133,8 +133,11 @@ project/
 
 主要 API 分组：
 
-- `GET /api/chapters`：章节列表；老师调用时先从 Notion 章节库同步章节到 SQLite
+- `GET /api/chapters`：章节列表；老师返回全部本地章节，学生只返回 `student_visible = 1` 的开放章节
 - `GET /api/chapters/:id`：章节详情
+- `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节库到 SQLite；Notion 已删除章节先对学生隐藏，不物理删除本地数据
+- `POST /api/teacher/chapters/:id/show-to-students`：老师将章节开放给学生
+- `POST /api/teacher/chapters/:id/hide-from-students`：老师将章节对学生隐藏
 - `POST /api/chapters/:id/raw-pages/from-file`：上传文件并用 Qwen 生成原始页
 - `POST /api/chapters/:id/fill-outline`：Codex Agent A 自动填充考点
 - `POST /api/chapters/:id/import-exam-questions`：Codex Agent B 真题入库

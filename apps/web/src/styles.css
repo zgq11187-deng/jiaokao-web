@@ -119,6 +119,18 @@ textarea {
   font-weight: 800;
 }
 
+.chapter-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.chapter-actions button {
+  min-height: 38px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
 .icon-btn {
   width: 38px;
   min-height: 38px;
@@ -311,6 +323,10 @@ textarea {
   gap: 12px;
 }
 
+.chapter-card-grid.compact {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .chapter-card-grid article {
   display: grid;
   gap: 10px;
@@ -362,6 +378,29 @@ textarea {
 .student-section .section-title {
   justify-content: space-between;
   flex-wrap: wrap;
+}
+
+.chapter-publish-panel {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  border: 1px solid #dbe4ee;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.chapter-publish-panel div {
+  display: grid;
+  gap: 4px;
+}
+
+.chapter-publish-panel span {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .student-info .panel-body {
@@ -925,6 +964,39 @@ pre {
   gap: 10px;
   max-height: 260px;
   overflow: auto;
+}
+
+.student-account-list {
+  margin-top: 18px;
+  display: grid;
+  gap: 10px;
+}
+
+.student-account-list article {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+}
+
+.sub-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sub-panel-title h4 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.danger-button {
+  border-color: #fecaca;
+  color: #b91c1c;
+}
+
+.danger-button:hover:not(:disabled) {
+  background: #fef2f2;
 }
 
 .inline-form {

@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 
-const API = "http://127.0.0.1:37200";
+const API = "";
 
 const emptyAuthForm = {
   name: "",
@@ -40,6 +40,8 @@ function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [applications, setApplications] = useState([]);
+  const [students, setStudents] = useState([]);
+  const [studentChapterListOpen, setStudentChapterListOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [chapterNo, setChapterNo] = useState("");
   const [sectionNo, setSectionNo] = useState("");
@@ -72,7 +74,10 @@ function App() {
 
   useEffect(() => {
     if (isAuthorized) loadChapters();
-    if (isTeacher) loadApplications();
+    if (isTeacher) {
+      loadApplications();
+      loadStudents();
+    }
   }, [user?.id, user?.authorizationStatus]);
 
   useEffect(() => {
@@ -157,20 +162,44 @@ function App() {
     setError("");
     setSyncNotice("");
     const data = await request("/api/chapters");
-    setChapters(data.chapters || []);
+    const nextChapters = data.chapters || [];
+    setChapters(nextChapters);
     if (data.syncWarning) {
-      if (data.chapters?.length) {
+      if (nextChapters.length) {
         setSyncNotice("Notion 章节库暂时连接失败，已显示上次同步到本地的章节。");
       } else {
         setError(data.syncWarning);
       }
     }
     const routeChapterId = chapterIdFromPath(routePath);
-    if (routeChapterId && data.chapters?.some((chapter) => chapter.id === routeChapterId)) {
+    if (routeChapterId && nextChapters.some((chapter) => chapter.id === routeChapterId)) {
       setSelectedId(routeChapterId);
-    } else if (!selectedId && data.chapters?.length) {
-      setSelectedId(data.chapters[0].id);
+    } else if (nextChapters.some((chapter) => chapter.id === selectedId)) {
+      // Keep the current selection when it still exists after refresh.
+    } else if (nextChapters.length) {
+      setSelectedId(nextChapters[0].id);
+      if (!isTeacher && routePath.startsWith("/chapters/")) {
+        navigateTo(`/chapters/${nextChapters[0].id}`);
+      }
+    } else {
+      setSelectedId(null);
+      setDetail(null);
     }
+  }
+
+  async function syncChaptersFromNotion() {
+    await withBusy("同步 Notion 章节", async () => {
+      const data = await request("/api/teacher/sync-chapters-from-notion", {
+        method: "POST",
+      });
+      setChapters(data.chapters || []);
+      const result = data.syncResult;
+      if (result) {
+        setSyncNotice(
+          `Notion 同步完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，隐藏 ${result.hidden || 0}。`,
+        );
+      }
+    });
   }
 
   async function loadApplications() {
@@ -179,12 +208,19 @@ function App() {
     setApplications(data.applications || []);
   }
 
+  async function loadStudents() {
+    if (!isTeacher) return;
+    const data = await request("/api/teacher/students");
+    setStudents(data.students || []);
+  }
+
   async function reviewApplication(id, action) {
     await withBusy(action === "approve" ? "通过申请" : "拒绝申请", async () => {
       await request(`/api/teacher/applications/${id}/${action}`, {
         method: "POST",
       });
       await loadApplications();
+      await loadStudents();
     });
   }
 
@@ -195,6 +231,36 @@ function App() {
         body: JSON.stringify(studentForm),
       });
       await loadApplications();
+      await loadStudents();
+    });
+  }
+
+  async function updateStudentAccess(id, action) {
+    await withBusy(action === "authorize" ? "开放权限" : "收回权限", async () => {
+      await request(`/api/teacher/students/${id}/${action}`, { method: "POST" });
+      await loadStudents();
+      await loadApplications();
+    });
+  }
+
+  async function deleteStudent(id) {
+    const confirmed = window.confirm("删除后该学生账号和学习/答题记录将被移除，确定删除吗？");
+    if (!confirmed) return;
+    await withBusy("删除学生", async () => {
+      await request(`/api/teacher/students/${id}`, { method: "DELETE" });
+      await loadStudents();
+      await loadApplications();
+    });
+  }
+
+  async function updateChapterVisibility(chapterId, visible) {
+    await withBusy(visible ? "开放章节" : "隐藏章节", async () => {
+      await request(
+        `/api/teacher/chapters/${chapterId}/${visible ? "show-to-students" : "hide-from-students"}`,
+        { method: "POST" },
+      );
+      await loadChapters();
+      if (selectedId) await loadDetail(selectedId);
     });
   }
 
@@ -324,7 +390,10 @@ function App() {
 
   function selectChapter(chapterId) {
     setSelectedId(chapterId);
-    if (!isTeacher) navigateTo(`/chapters/${chapterId}`);
+    if (!isTeacher) {
+      setStudentChapterListOpen(false);
+      navigateTo(`/chapters/${chapterId}`);
+    }
   }
 
   if (authLoading) {
@@ -417,22 +486,50 @@ function App() {
 
         <div className="list-head">
           <span>章节</span>
-          <button className="icon-btn" onClick={loadChapters} title="刷新章节">
-            <RefreshCw size={15} />
-          </button>
+          <div className="chapter-actions">
+            {!isTeacher && chapters.length > 1 ? (
+              <button
+                onClick={() => setStudentChapterListOpen((open) => !open)}
+                title={studentChapterListOpen ? "收起章节" : "切换章节"}
+              >
+                {studentChapterListOpen ? "收起" : "切换"}
+              </button>
+            ) : null}
+            {isTeacher ? (
+              <button onClick={syncChaptersFromNotion} disabled={Boolean(busy)}>
+                <RefreshCw size={15} /> 同步 Notion
+              </button>
+            ) : (
+              <button className="icon-btn" onClick={loadChapters} title="刷新章节">
+                <RefreshCw size={15} />
+              </button>
+            )}
+          </div>
         </div>
         <nav className="chapter-list">
-          {chapters.map((chapter) => (
+          {(isTeacher
+            ? chapters
+            : studentChapterListOpen
+              ? chapters
+              : selected
+                ? [selected]
+                : chapters.slice(0, 1)
+          ).map((chapter) => (
             <button
               key={chapter.id}
               className={chapter.id === selectedId ? "active" : ""}
               onClick={() => selectChapter(chapter.id)}
             >
               <strong>{chapter.title}</strong>
-              <span>{chapter.status || "待生成"}</span>
+              <span>
+                {chapter.status || "待生成"}
+                {isTeacher ? ` · ${chapter.student_visible ? "学生可见" : "学生隐藏"}` : ""}
+              </span>
             </button>
           ))}
-          {!chapters.length ? <p className="muted">暂无章节。</p> : null}
+          {!chapters.length ? (
+            <p className="muted">{isTeacher ? "暂无章节。" : "暂无开放章节，请等待老师发布。"}</p>
+          ) : null}
         </nav>
       </aside>
 
@@ -467,8 +564,12 @@ function App() {
             scanNotionTriggers={scanNotionTriggers}
             exportFile={exportFile}
             applications={applications}
+            students={students}
             reviewApplication={reviewApplication}
             createStudentAccount={createStudentAccount}
+            updateStudentAccess={updateStudentAccess}
+            deleteStudent={deleteStudent}
+            updateChapterVisibility={updateChapterVisibility}
           />
         ) : (
           <StudentWorkspace
@@ -620,15 +721,19 @@ function TeacherWorkspace(props) {
     latestTeaching,
     files,
     setFiles,
-  busy,
-  uploadRawPage,
-  createLecturePage,
-  runStep,
-  scanNotionTriggers,
-  exportFile,
+    busy,
+    uploadRawPage,
+    createLecturePage,
+    runStep,
+    scanNotionTriggers,
+    exportFile,
     applications,
+    students,
     reviewApplication,
     createStudentAccount,
+    updateStudentAccess,
+    deleteStudent,
+    updateChapterVisibility,
   } = props;
   const [studentForm, setStudentForm] = useState(emptyAuthForm);
 
@@ -703,10 +808,68 @@ function TeacherWorkspace(props) {
             <p className="muted">暂无学生申请。</p>
           )}
         </div>
+        <div className="student-account-list">
+          <div className="sub-panel-title">
+            <h4>学生账号</h4>
+            <span>{students.length}</span>
+          </div>
+          {students.length ? (
+            students.map((student) => (
+              <article key={student.id}>
+                <div>
+                  <strong>{student.name}</strong>
+                  <p>{student.phone} · {student.class_note || "未填写班级/身份说明"}</p>
+                  <p>权限：{statusText(student.authorization_status)}</p>
+                </div>
+                <div className="row">
+                  {student.authorization_status !== "approved" ? (
+                    <button
+                      onClick={() => updateStudentAccess(student.id, "authorize")}
+                      disabled={Boolean(busy)}
+                    >
+                      开放权限
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => updateStudentAccess(student.id, "revoke")}
+                      disabled={Boolean(busy)}
+                    >
+                      收回权限
+                    </button>
+                  )}
+                  <button
+                    className="danger-button"
+                    onClick={() => deleteStudent(student.id)}
+                    disabled={Boolean(busy)}
+                  >
+                    删除用户
+                  </button>
+                </div>
+              </article>
+            ))
+          ) : (
+            <p className="muted">暂无学生账号。</p>
+          )}
+        </div>
       </section>
 
       {selected ? (
         <>
+          <section className="chapter-publish-panel">
+            <div>
+              <strong>学生端可见性</strong>
+              <span>{selected.student_visible ? "学生可见" : "学生隐藏"}</span>
+            </div>
+            {selected.student_visible ? (
+              <button onClick={() => updateChapterVisibility(selected.id, false)} disabled={Boolean(busy)}>
+                对学生隐藏
+              </button>
+            ) : (
+              <button className="primary" onClick={() => updateChapterVisibility(selected.id, true)} disabled={Boolean(busy)}>
+                开放给学生
+              </button>
+            )}
+          </section>
           <section className="flow-grid">
             <FlowCard index="1" title="Qwen 原始页面" icon={<Upload size={18} />}>
               <input
@@ -1054,6 +1217,18 @@ function StudentWorkspace({
 
 function StudentHome({ chapters, selected, detail, latestTeaching, navigateTo }) {
   const currentQuestions = detail?.questions?.length || 0;
+  const [chapterListOpen, setChapterListOpen] = useState(false);
+  const visibleChapters = chapterListOpen
+    ? chapters
+    : selected
+      ? [selected]
+      : chapters.slice(0, 1);
+
+  function openChapter(chapterId) {
+    setChapterListOpen(false);
+    navigateTo(`/chapters/${chapterId}`);
+  }
+
   return (
     <>
       <section className="student-home">
@@ -1096,9 +1271,14 @@ function StudentHome({ chapters, selected, detail, latestTeaching, navigateTo })
           <ClipboardList size={18} />
           <h2>课程章节</h2>
           <span className="pill">{chapters.length} 个章节</span>
+          {chapters.length > 1 ? (
+            <button onClick={() => setChapterListOpen((open) => !open)}>
+              {chapterListOpen ? "收起章节" : "切换章节"}
+            </button>
+          ) : null}
         </div>
-        <div className="chapter-card-grid">
-          {chapters.map((chapter) => (
+        <div className={`chapter-card-grid ${chapterListOpen ? "" : "compact"}`}>
+          {visibleChapters.map((chapter) => (
             <article key={chapter.id} className={chapter.id === selected?.id ? "active" : ""}>
               <strong>{chapter.title}</strong>
               <p>{chapter.status || "待生成"}</p>
@@ -1106,12 +1286,12 @@ function StudentHome({ chapters, selected, detail, latestTeaching, navigateTo })
                 {chapter.id === selected?.id ? <span>{currentQuestions} 题</span> : null}
                 {chapter.id === selected?.id && latestTeaching ? <span>已有教学页</span> : null}
               </div>
-              <button onClick={() => navigateTo(`/chapters/${chapter.id}`)}>
+              <button onClick={() => openChapter(chapter.id)}>
                 进入学习
               </button>
             </article>
           ))}
-          {!chapters.length ? <div className="empty">暂无章节。请等待老师同步课程章节。</div> : null}
+          {!chapters.length ? <div className="empty">暂无开放章节，请等待老师发布。</div> : null}
         </div>
       </section>
     </>

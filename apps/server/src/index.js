@@ -183,19 +183,56 @@ app.post("/api/teacher/students", requireTeacher, (req, res) => {
   }
 });
 
-app.get("/api/chapters", requireAuthorized, async (req, res) => {
-  let syncWarning = "";
-  if (req.user?.role === "teacher" && notion && config.notion.chapterDbId) {
-    try {
-      await syncChaptersFromNotion();
-    } catch (error) {
-      syncWarning = `Notion 章节库同步失败，请稍后重试。${error.code ? `(${error.code})` : ""}`;
-    }
-  }
-  const chapters = all(
-    `SELECT * FROM chapters ORDER BY updated_at DESC, id DESC`,
+app.get("/api/teacher/students", requireTeacher, (_req, res) => {
+  const students = all(
+    `SELECT id, name, phone, role, authorization_status, class_note, created_at, updated_at
+     FROM users
+     WHERE role = 'student'
+     ORDER BY updated_at DESC, created_at DESC, id DESC`,
   );
-  res.json({ ok: true, chapters, syncWarning });
+  res.json({ ok: true, students });
+});
+
+app.post("/api/teacher/students/:id/authorize", requireTeacher, (req, res) => {
+  updateStudentAuthorization(req, res, "approved");
+});
+
+app.post("/api/teacher/students/:id/revoke", requireTeacher, (req, res) => {
+  updateStudentAuthorization(req, res, "rejected");
+});
+
+app.delete("/api/teacher/students/:id", requireTeacher, (req, res) => {
+  try {
+    const student = mustStudentUser(req.params.id);
+    run(`DELETE FROM sessions WHERE user_id = ?`, [student.id]);
+    run(`DELETE FROM users WHERE id = ?`, [student.id]);
+    res.json({ ok: true, deletedId: student.id });
+  } catch (error) {
+    res.status(/不存在/.test(error.message) ? 404 : 400).json({ error: error.message });
+  }
+});
+
+app.post("/api/teacher/sync-chapters-from-notion", requireTeacher, async (_req, res) => {
+  try {
+    const syncResult = await syncChaptersFromNotion();
+    const chapters = listChaptersForUser({ role: "teacher" });
+    res.json({ ok: true, chapters, syncResult });
+  } catch (error) {
+    res.status(500).json({ error: `Notion 章节库同步失败：${error.message}` });
+  }
+});
+
+app.post("/api/teacher/chapters/:id/show-to-students", requireTeacher, (req, res) => {
+  updateChapterStudentVisibility(req, res, 1);
+});
+
+app.post("/api/teacher/chapters/:id/hide-from-students", requireTeacher, (req, res) => {
+  updateChapterStudentVisibility(req, res, 0);
+});
+
+app.get("/api/chapters", requireAuthorized, async (req, res) => {
+  const chapters = listChaptersForUser(req.user);
+  res.json({ ok: true, chapters, syncWarning: "" });
 });
 
 app.post("/api/chapters", requireTeacher, async (req, res) => {
@@ -229,6 +266,9 @@ app.post("/api/chapters", requireTeacher, async (req, res) => {
 app.get("/api/chapters/:id", requireAuthorized, (req, res) => {
   const chapter = get(`SELECT * FROM chapters WHERE id = ?`, [req.params.id]);
   if (!chapter) return res.status(404).json({ error: "章节不存在" });
+  if (!canAccessChapter(req.user, chapter)) {
+    return res.status(403).json({ error: "该章节暂未对学生开放" });
+  }
   res.json({
     ok: true,
     chapter,
@@ -241,16 +281,26 @@ app.get("/api/chapters/:id", requireAuthorized, (req, res) => {
 });
 
 app.get("/api/student/summary", requireAuthorized, (req, res) => {
+  const visibleOnly = req.user.role === "teacher" ? "" : " AND chapters.student_visible = 1";
   const totalAttempts = get(
-    `SELECT COUNT(*) AS count FROM question_attempts WHERE user_id = ?`,
+    `SELECT COUNT(*) AS count
+     FROM question_attempts
+     JOIN chapters ON chapters.id = question_attempts.chapter_id
+     WHERE question_attempts.user_id = ?${visibleOnly}`,
     [req.user.id],
   )?.count || 0;
   const wrongAttempts = get(
-    `SELECT COUNT(*) AS count FROM question_attempts WHERE user_id = ? AND is_correct = 0`,
+    `SELECT COUNT(*) AS count
+     FROM question_attempts
+     JOIN chapters ON chapters.id = question_attempts.chapter_id
+     WHERE question_attempts.user_id = ? AND is_correct = 0${visibleOnly}`,
     [req.user.id],
   )?.count || 0;
   const practicedChapters = get(
-    `SELECT COUNT(DISTINCT chapter_id) AS count FROM question_attempts WHERE user_id = ?`,
+    `SELECT COUNT(DISTINCT question_attempts.chapter_id) AS count
+     FROM question_attempts
+     JOIN chapters ON chapters.id = question_attempts.chapter_id
+     WHERE question_attempts.user_id = ?${visibleOnly}`,
     [req.user.id],
   )?.count || 0;
   const latestAttempts = all(
@@ -258,7 +308,7 @@ app.get("/api/student/summary", requireAuthorized, (req, res) => {
      FROM question_attempts
      JOIN exam_questions ON exam_questions.id = question_attempts.question_id
      JOIN chapters ON chapters.id = question_attempts.chapter_id
-     WHERE question_attempts.user_id = ?
+     WHERE question_attempts.user_id = ?${visibleOnly}
      ORDER BY question_attempts.created_at DESC, question_attempts.id DESC
      LIMIT 8`,
     [req.user.id],
@@ -278,6 +328,7 @@ app.get("/api/student/summary", requireAuthorized, (req, res) => {
 app.post("/api/questions/:id/attempt", requireAuthorized, (req, res) => {
   try {
     const question = mustQuestion(req.params.id);
+    ensureCanAccessChapter(req.user, question.chapter_id);
     const selectedAnswer = String(req.body?.selectedAnswer || "").trim();
     if (!selectedAnswer) return res.status(400).json({ error: "请先选择或填写答案" });
     const mode = req.body?.mode === "mock" ? "mock" : "practice";
@@ -305,6 +356,9 @@ app.post("/api/questions/:id/attempt", requireAuthorized, (req, res) => {
 
 app.get("/api/student/wrong-questions", requireAuthorized, (req, res) => {
   const chapterId = Number(req.query.chapterId || 0);
+  if (chapterId && !canAccessChapter(req.user, mustChapter(chapterId))) {
+    return res.status(403).json({ error: "该章节暂未对学生开放" });
+  }
   const params = [req.user.id];
   const chapterFilter = chapterId ? "AND question_attempts.chapter_id = ?" : "";
   if (chapterId) params.push(chapterId);
@@ -324,9 +378,10 @@ app.get("/api/student/wrong-questions", requireAuthorized, (req, res) => {
      JOIN question_attempts ON question_attempts.id = latest.latest_attempt_id
      JOIN exam_questions ON exam_questions.id = latest.question_id
      JOIN chapters ON chapters.id = exam_questions.chapter_id
+     WHERE (? = 'teacher' OR chapters.student_visible = 1)
      ORDER BY latest.latest_attempt_id DESC
      LIMIT 80`,
-    params,
+    [...params, req.user.role],
   );
   res.json({ ok: true, wrongQuestions });
 });
@@ -334,8 +389,14 @@ app.get("/api/student/wrong-questions", requireAuthorized, (req, res) => {
 app.get("/api/mock-exam/questions", requireAuthorized, (req, res) => {
   const limit = clampInt(req.query.limit, 6, 30, 12);
   const chapterId = Number(req.query.chapterId || 0);
+  if (chapterId && !canAccessChapter(req.user, mustChapter(chapterId))) {
+    return res.status(403).json({ error: "该章节暂未对学生开放" });
+  }
   const params = [];
-  const chapterFilter = chapterId ? "WHERE exam_questions.chapter_id = ?" : "";
+  const filters = [];
+  if (chapterId) filters.push("exam_questions.chapter_id = ?");
+  if (req.user.role !== "teacher") filters.push("chapters.student_visible = 1");
+  const chapterFilter = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   if (chapterId) params.push(chapterId);
   params.push(limit);
   const questions = all(
@@ -366,6 +427,7 @@ app.post("/api/mock-exam/submit", requireAuthorized, (req, res) => {
     if (!answers.length) return res.status(400).json({ error: "请至少提交 1 道题" });
     const results = answers.map((answer) => {
       const question = mustQuestion(answer.questionId);
+      ensureCanAccessChapter(req.user, question.chapter_id);
       const selectedAnswer = String(answer.selectedAnswer || "").trim();
       const isCorrect = selectedAnswer ? isAnswerCorrect(selectedAnswer, question.answer) : false;
       const attempt = saveQuestionAttempt({
@@ -1722,6 +1784,9 @@ async function scanNotionAgentTriggers() {
 app.get("/api/chapters/:id/export/:kind", requireAuthorized, async (req, res) => {
   try {
     const chapter = mustChapter(req.params.id);
+    if (!canAccessChapter(req.user, chapter)) {
+      return res.status(403).json({ error: "该章节暂未对学生开放" });
+    }
     const latest = get(
       `SELECT * FROM teaching_pages WHERE chapter_id = ? ORDER BY id DESC LIMIT 1`,
       [chapter.id],
@@ -1805,11 +1870,39 @@ function clampInt(value, min, max, fallback) {
 }
 
 async function syncChaptersFromNotion() {
-  const pages = await queryChapterPages();
-  for (const page of pages) {
-    upsertChapterFromNotionPage(page);
+  if (!notion || !config.notion.chapterDbId) {
+    throw new Error("NOTION_TOKEN 或 CHAPTER_DATABASE_ID 未配置");
   }
-  return pages.length;
+  const pages = await queryChapterPages();
+  const result = { created: 0, updated: 0, hidden: 0, kept: 0 };
+  const notionPageIds = new Set(pages.map((page) => page.id));
+  for (const page of pages) {
+    const action = upsertChapterFromNotionPage(page);
+    result[action] = (result[action] || 0) + 1;
+  }
+  const localNotionChapters = all(
+    `SELECT id, notion_page_id, student_visible
+     FROM chapters
+     WHERE notion_page_id IS NOT NULL AND notion_page_id != ''`,
+  );
+  for (const chapter of localNotionChapters) {
+    if (notionPageIds.has(chapter.notion_page_id)) {
+      result.kept += 1;
+      continue;
+    }
+    if (chapter.student_visible) {
+      run(
+        `UPDATE chapters
+         SET student_visible = 0, status = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        ["Notion 已删除", chapter.id],
+      );
+      result.hidden += 1;
+    } else {
+      result.kept += 1;
+    }
+  }
+  return result;
 }
 
 function upsertChapterFromNotionPage(page) {
@@ -1825,14 +1918,37 @@ function upsertChapterFromNotionPage(page) {
        WHERE id = ?`,
       [title, chapterNo, sectionNo, page.url || null, status, existing.id],
     );
-    return get(`SELECT * FROM chapters WHERE id = ?`, [existing.id]);
+    return "updated";
   }
-  const inserted = run(
+  run(
     `INSERT INTO chapters (title, chapter_no, section_no, notion_page_id, notion_url, status)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [title, chapterNo, sectionNo, page.id, page.url || null, status],
   );
-  return get(`SELECT * FROM chapters WHERE id = ?`, [inserted.lastInsertRowid]);
+  return "created";
+}
+
+function listChaptersForUser(user) {
+  if (user?.role === "teacher") {
+    return all(`SELECT * FROM chapters ORDER BY updated_at DESC, id DESC`);
+  }
+  return all(
+    `SELECT * FROM chapters
+     WHERE student_visible = 1
+     ORDER BY updated_at DESC, id DESC`,
+  );
+}
+
+function canAccessChapter(user, chapter) {
+  return user?.role === "teacher" || Number(chapter?.student_visible) === 1;
+}
+
+function ensureCanAccessChapter(user, chapterId) {
+  const chapter = mustChapter(chapterId);
+  if (!canAccessChapter(user, chapter)) {
+    throw new Error("该章节暂未对学生开放");
+  }
+  return chapter;
 }
 
 function assertChapterNotionPage(chapter) {
@@ -2027,6 +2143,57 @@ function reviewApplication(req, res, status) {
       application.id,
     ]),
   });
+}
+
+function updateStudentAuthorization(req, res, status) {
+  try {
+    const student = mustStudentUser(req.params.id);
+    run(
+      `UPDATE users
+       SET authorization_status = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [status, student.id],
+    );
+    if (status !== "approved") {
+      run(`DELETE FROM sessions WHERE user_id = ?`, [student.id]);
+    }
+    res.json({
+      ok: true,
+      student: get(
+        `SELECT id, name, phone, role, authorization_status, class_note, created_at, updated_at
+         FROM users WHERE id = ?`,
+        [student.id],
+      ),
+    });
+  } catch (error) {
+    res.status(/不存在/.test(error.message) ? 404 : 400).json({ error: error.message });
+  }
+}
+
+function updateChapterStudentVisibility(req, res, visible) {
+  try {
+    const chapter = mustChapter(req.params.id);
+    run(
+      `UPDATE chapters
+       SET student_visible = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [visible ? 1 : 0, chapter.id],
+    );
+    res.json({
+      ok: true,
+      chapter: get(`SELECT * FROM chapters WHERE id = ?`, [chapter.id]),
+    });
+  } catch (error) {
+    res.status(/不存在/.test(error.message) ? 404 : 400).json({ error: error.message });
+  }
+}
+
+function mustStudentUser(id) {
+  const student = get(`SELECT * FROM users WHERE id = ?`, [Number(id)]);
+  if (!student || student.role !== "student") {
+    throw new Error("学生账号不存在");
+  }
+  return student;
 }
 
 function validateNamePhonePassword({ name, phone, password }) {
