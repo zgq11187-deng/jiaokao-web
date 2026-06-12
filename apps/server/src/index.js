@@ -58,6 +58,7 @@ const sharedDir = path.resolve(config.rootDir, "packages/shared/schemas");
 const RAW_PAGE_PLACEHOLDER = "未提取到文本内容，请检查 PDF 是否为扫描件";
 const EXAM_CANDIDATE_SCOPE_LIMIT = 100;
 const TEACHING_PAGE_QUESTION_LIMIT = 30;
+const MIN_NOTION_TEACHING_MARKDOWN_LENGTH = 80;
 const MIXED_WRITTEN_QUESTION_TYPE = "简答/操作题";
 
 app.use(cors({ origin: config.webOrigin, credentials: true }));
@@ -275,7 +276,10 @@ app.get("/api/chapters/:id", requireAuthorized, (req, res) => {
     rawPages: all(`SELECT * FROM raw_pages WHERE chapter_id = ? ORDER BY id DESC`, [chapter.id]),
     outlines: all(`SELECT * FROM outline_analyses WHERE chapter_id = ? ORDER BY id DESC`, [chapter.id]),
     questions: all(`SELECT * FROM exam_questions WHERE chapter_id = ? ORDER BY id DESC`, [chapter.id]),
-    teachingPages: all(`SELECT * FROM teaching_pages WHERE chapter_id = ? ORDER BY id DESC`, [chapter.id]),
+    teachingPages: all(
+      `SELECT * FROM teaching_pages WHERE chapter_id = ? ORDER BY created_at DESC, id DESC`,
+      [chapter.id],
+    ),
     logs: all(`SELECT * FROM generation_logs WHERE chapter_id = ? ORDER BY id DESC LIMIT 50`, [chapter.id]),
   });
 });
@@ -1099,7 +1103,7 @@ async function importTeachingQuestions(chapter) {
     }
     const parsed = parseTeachingQuestions(markdown, chapter, warnings);
     if (!parsed.questions.length) {
-      throw new Error("未在教学页中解析到自编题，请检查是否包含“本节巩固练习 / 自编题 / 非历年真题 / 随堂练习”区块");
+      throw new Error("未在教学页中解析到习题，请检查是否包含“章节习题 / 单章题库 / 本章练习 / 本节巩固练习 / 自编题 / 随堂练习”区块");
     }
     let imported = 0;
     let updated = 0;
@@ -1165,7 +1169,7 @@ async function importTeachingQuestions(chapter) {
 
 async function loadTeachingQuestionSource(chapter) {
   const latest = get(
-    `SELECT * FROM teaching_pages WHERE chapter_id = ? ORDER BY id DESC LIMIT 1`,
+    `SELECT * FROM teaching_pages WHERE chapter_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
     [chapter.id],
   );
   const localMarkdown = latest?.markdown || "";
@@ -1182,10 +1186,24 @@ async function loadTeachingQuestionSource(chapter) {
 
 function teachingQuestionSourceScore(markdown) {
   const text = String(markdown || "");
-  const markers = ["本节巩固练习", "按本节内容自编", "非历年真题", "自编题", "随堂练习"];
+  const markers = getTeachingQuestionSectionMarkers();
   const markerScore = markers.reduce((score, marker) => score + (text.includes(marker) ? 8 : 0), 0);
   const questionScore = (text.match(/<details\b|答案与解析|参考答案|^[\s\t]*\d+[.、]\s+/gm) || []).length;
   return markerScore + questionScore;
+}
+
+function getTeachingQuestionSectionMarkers() {
+  return [
+    "章节习题",
+    "单章题库",
+    "本章练习",
+    "本节练习",
+    "本节巩固练习",
+    "按本节内容自编",
+    "非历年真题",
+    "自编题",
+    "随堂练习",
+  ];
 }
 
 function parseTeachingQuestions(markdown, chapter, warnings = []) {
@@ -1279,7 +1297,7 @@ function normalizeTeachingQuestionMarkdown(markdown) {
 }
 
 function scopeTeachingQuestionMarkdown(markdown) {
-  const markers = ["本节巩固练习", "按本节内容自编", "非历年真题", "自编题"];
+  const markers = getTeachingQuestionSectionMarkers();
   const starts = markers
     .map((marker) => markdown.indexOf(marker))
     .filter((index) => index >= 0);
@@ -1303,12 +1321,12 @@ function detectQuestionTypeHeading(line) {
   const headingLike =
     /^#{1,6}\s*/.test(line) ||
     /^[一二三四五六七八九十]+[、.．]\s*/.test(normalized) ||
-    /^(单选题?|多选题?|判断题?|简答题?|操作题?)$/.test(normalized) ||
+    /^(单选题?|单项选择题?|选择题?|多选题?|多项选择题?|判断题?|简答题?|操作题?)$/.test(normalized) ||
     /简答\s*[/／]\s*操作题?/.test(normalized);
   if (!headingLike) return "";
   if (/简答/.test(normalized) && /操作/.test(normalized)) return MIXED_WRITTEN_QUESTION_TYPE;
-  if (/单选题|单选/.test(normalized)) return "单选题";
-  if (/多选题|多选/.test(normalized)) return "多选题";
+  if (/单选题|单选|单项选择|^选择题?$/.test(normalized)) return "单选题";
+  if (/多选题|多选|多项选择/.test(normalized)) return "多选题";
   if (/判断题|判断/.test(normalized)) return "判断题";
   if (/操作题|操作/.test(normalized)) return "操作题";
   if (/简答题|简答/.test(normalized)) return "简答题";
@@ -1788,7 +1806,7 @@ app.get("/api/chapters/:id/export/:kind", requireAuthorized, async (req, res) =>
       return res.status(403).json({ error: "该章节暂未对学生开放" });
     }
     const latest = get(
-      `SELECT * FROM teaching_pages WHERE chapter_id = ? ORDER BY id DESC LIMIT 1`,
+      `SELECT * FROM teaching_pages WHERE chapter_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
       [chapter.id],
     );
     const markdown = latest?.markdown || "";
@@ -1799,7 +1817,11 @@ app.get("/api/chapters/:id/export/:kind", requireAuthorized, async (req, res) =>
     } else if (kind === "site") {
       sendDownload(res, buildHtmlDownload(chapter.title, markdown), `${chapter.title}.html`, "text/html; charset=utf-8");
     } else if (kind === "question-bank") {
-      const questions = all(`SELECT * FROM exam_questions WHERE chapter_id = ?`, [chapter.id]);
+      let questions = all(`SELECT * FROM exam_questions WHERE chapter_id = ?`, [chapter.id]);
+      if (!questions.length && req.user.role === "teacher") {
+        await safeImportTeachingQuestions(chapter);
+        questions = all(`SELECT * FROM exam_questions WHERE chapter_id = ?`, [chapter.id]);
+      }
       sendDownload(res, buildQuestionBankHtml(chapter.title, questions), `${chapter.title}-题库.html`, "text/html; charset=utf-8");
     } else if (kind === "ppt") {
       const buffer = await buildPptx(chapter.title, markdown);
@@ -1874,11 +1896,33 @@ async function syncChaptersFromNotion() {
     throw new Error("NOTION_TOKEN 或 CHAPTER_DATABASE_ID 未配置");
   }
   const pages = await queryChapterPages();
-  const result = { created: 0, updated: 0, hidden: 0, kept: 0 };
+  const result = {
+    created: 0,
+    updated: 0,
+    hidden: 0,
+    kept: 0,
+    teachingCreated: 0,
+    teachingUpdated: 0,
+    teachingSkipped: 0,
+    teachingFailed: 0,
+    questionsImported: 0,
+    questionsUpdated: 0,
+    questionsSkipped: 0,
+    questionsFailed: 0,
+  };
   const notionPageIds = new Set(pages.map((page) => page.id));
   for (const page of pages) {
-    const action = upsertChapterFromNotionPage(page);
+    const { action, chapter } = upsertChapterFromNotionPage(page);
     result[action] = (result[action] || 0) + 1;
+    const teachingAction = await syncTeachingPageFromNotionChapter(page, chapter);
+    result[teachingAction] = (result[teachingAction] || 0) + 1;
+    if (["teachingCreated", "teachingUpdated"].includes(teachingAction)) {
+      const questionResult = await safeImportTeachingQuestions(chapter);
+      result.questionsImported += questionResult.imported || 0;
+      result.questionsUpdated += questionResult.updated || 0;
+      result.questionsSkipped += questionResult.skipped || 0;
+      if (questionResult.failed) result.questionsFailed += 1;
+    }
   }
   const localNotionChapters = all(
     `SELECT id, notion_page_id, student_visible
@@ -1918,14 +1962,88 @@ function upsertChapterFromNotionPage(page) {
        WHERE id = ?`,
       [title, chapterNo, sectionNo, page.url || null, status, existing.id],
     );
-    return "updated";
+    return {
+      action: "updated",
+      chapter: get(`SELECT * FROM chapters WHERE id = ?`, [existing.id]),
+    };
   }
-  run(
+  const result = run(
     `INSERT INTO chapters (title, chapter_no, section_no, notion_page_id, notion_url, status)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [title, chapterNo, sectionNo, page.id, page.url || null, status],
   );
-  return "created";
+  return {
+    action: "created",
+    chapter: get(`SELECT * FROM chapters WHERE id = ?`, [result.lastInsertRowid]),
+  };
+}
+
+async function syncTeachingPageFromNotionChapter(page, chapter) {
+  try {
+    const markdown = await readPageMarkdown(page.id);
+    if (!isUsefulNotionTeachingMarkdown(markdown)) {
+      return "teachingSkipped";
+    }
+    const existing = get(
+      `SELECT * FROM teaching_pages
+       WHERE chapter_id = ? AND notion_page_id = ?
+       ORDER BY id DESC LIMIT 1`,
+      [chapter.id, page.id],
+    );
+    if (existing) {
+      run(
+        `UPDATE teaching_pages
+         SET markdown = ?, summary = ?, created_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [markdown, summarizeTeachingMarkdown(markdown), existing.id],
+      );
+      return "teachingUpdated";
+    }
+    run(
+      `INSERT INTO teaching_pages
+       (chapter_id, markdown, summary, notion_page_id)
+       VALUES (?, ?, ?, ?)`,
+      [chapter.id, markdown, summarizeTeachingMarkdown(markdown), page.id],
+    );
+    return "teachingCreated";
+  } catch (error) {
+    logStep(
+      chapter?.id,
+      "sync-notion-teaching-page",
+      "warning",
+      `同步 Notion 章节正文失败：${error.message}`,
+      { notionPageId: page.id },
+    );
+    return "teachingFailed";
+  }
+}
+
+async function safeImportTeachingQuestions(chapter) {
+  try {
+    return await importTeachingQuestions(chapter);
+  } catch (error) {
+    logStep(
+      chapter?.id,
+      "sync-notion-teaching-questions",
+      "warning",
+      `同步 Notion 后导入教学页习题失败：${error.message}`,
+    );
+    return { imported: 0, updated: 0, skipped: 0, failed: true };
+  }
+}
+
+function isUsefulNotionTeachingMarkdown(markdown) {
+  const value = String(markdown || "").trim();
+  if (value.length < MIN_NOTION_TEACHING_MARKDOWN_LENGTH) return false;
+  return countNonEmptyLines(value) >= 3;
+}
+
+function summarizeTeachingMarkdown(markdown) {
+  const firstHeading = String(markdown || "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^#{1,6}\s*/, "").trim())
+    .find(Boolean);
+  return firstHeading?.slice(0, 160) || "Notion 章节页同步";
 }
 
 function listChaptersForUser(user) {

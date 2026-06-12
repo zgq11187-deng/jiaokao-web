@@ -196,7 +196,7 @@ function App() {
       const result = data.syncResult;
       if (result) {
         setSyncNotice(
-          `Notion 同步完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，隐藏 ${result.hidden || 0}。`,
+          `Notion 同步完成：章节新增 ${result.created || 0}，章节更新 ${result.updated || 0}，隐藏 ${result.hidden || 0}；教学页新增 ${result.teachingCreated || 0}，教学页更新 ${result.teachingUpdated || 0}，空页面跳过 ${result.teachingSkipped || 0}，失败 ${result.teachingFailed || 0}；习题导入 ${result.questionsImported || 0}，更新 ${result.questionsUpdated || 0}，跳过 ${result.questionsSkipped || 0}，失败 ${result.questionsFailed || 0}。`,
         );
       }
     });
@@ -572,23 +572,75 @@ function App() {
             updateChapterVisibility={updateChapterVisibility}
           />
         ) : (
-          <StudentWorkspace
-            selected={selected}
-            detail={detail}
-            latestTeaching={latestTeaching}
-            busy={busy}
-            submitQuestionAttempt={submitQuestionAttempt}
-            loadWrongQuestions={loadWrongQuestions}
-            loadMockQuestions={loadMockQuestions}
-            submitMockExam={submitMockExam}
-            exportFile={exportFile}
-            chapters={chapters}
-            routePath={routePath}
-            navigateTo={navigateTo}
-          />
+          <>
+            <StudentChapterSwitcher
+              chapters={chapters}
+              selected={selected}
+              selectChapter={selectChapter}
+            />
+            <StudentWorkspace
+              selected={selected}
+              detail={detail}
+              latestTeaching={latestTeaching}
+              busy={busy}
+              submitQuestionAttempt={submitQuestionAttempt}
+              loadWrongQuestions={loadWrongQuestions}
+              loadMockQuestions={loadMockQuestions}
+              submitMockExam={submitMockExam}
+              exportFile={exportFile}
+              chapters={chapters}
+              routePath={routePath}
+              navigateTo={navigateTo}
+            />
+          </>
         )}
       </section>
     </main>
+  );
+}
+
+function StudentChapterSwitcher({ chapters, selected, selectChapter }) {
+  const [open, setOpen] = useState(false);
+  const visibleChapters = open
+    ? chapters
+    : selected
+      ? [selected]
+      : chapters.slice(0, 1);
+
+  function chooseChapter(chapterId) {
+    setOpen(false);
+    selectChapter(chapterId);
+  }
+
+  return (
+    <section className="mobile-chapter-switcher" aria-label="学生章节切换">
+      <div className="mobile-chapter-switcher-head">
+        <div>
+          <span>当前章节</span>
+          <strong>{selected?.title || "暂无开放章节"}</strong>
+        </div>
+        {chapters.length > 1 ? (
+          <button onClick={() => setOpen((value) => !value)}>
+            {open ? "收起章节" : "切换章节"}
+          </button>
+        ) : null}
+      </div>
+      <div className={`mobile-chapter-switcher-list ${open ? "expanded" : ""}`}>
+        {visibleChapters.map((chapter) => (
+          <button
+            key={chapter.id}
+            className={chapter.id === selected?.id ? "active" : ""}
+            onClick={() => chooseChapter(chapter.id)}
+          >
+            <strong>{chapter.title}</strong>
+            <span>{chapter.status || "待生成"}</span>
+          </button>
+        ))}
+        {!chapters.length ? (
+          <p className="muted">暂无开放章节，请等待老师发布。</p>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
