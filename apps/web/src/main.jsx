@@ -424,11 +424,11 @@ function App() {
     setRoutePath(path);
   }
 
-  function selectChapter(chapterId) {
+  function selectChapter(chapterId, nextPath) {
     setSelectedId(chapterId);
     if (!isTeacher) {
       setStudentChapterListOpen(false);
-      navigateTo(`/chapters/${chapterId}`);
+      navigateTo(nextPath || `/chapters/${chapterId}`);
     }
   }
 
@@ -614,6 +614,7 @@ function App() {
             <StudentChapterSwitcher
               chapters={chapters}
               selected={selected}
+              routePath={routePath}
               selectChapter={selectChapter}
             />
             <StudentWorkspace
@@ -637,7 +638,7 @@ function App() {
   );
 }
 
-function StudentChapterSwitcher({ chapters, selected, selectChapter }) {
+function StudentChapterSwitcher({ chapters, selected, routePath, selectChapter }) {
   const [open, setOpen] = useState(false);
   const visibleChapters = open
     ? chapters
@@ -647,7 +648,7 @@ function StudentChapterSwitcher({ chapters, selected, selectChapter }) {
 
   function chooseChapter(chapterId) {
     setOpen(false);
-    selectChapter(chapterId);
+    selectChapter(chapterId, routeForStudentTab(routeToStudentTab(routePath), chapterId));
   }
 
   return (

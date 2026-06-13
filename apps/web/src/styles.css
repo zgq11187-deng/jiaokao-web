@@ -1043,39 +1043,6 @@ pre {
     padding: 28px 18px 48px;
   }
 
-  .topbar h1 {
-    font-size: 28px;
-  }
-}
-
-@media (max-width: 720px) {
-  .sidebar {
-    padding: 20px 16px;
-    gap: 14px;
-  }
-
-  .brand strong {
-    font-size: 20px;
-  }
-
-  .student-nav {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .student-nav button,
-  .student-tabs button,
-  .quick-actions button,
-  .resource-actions button {
-    min-height: 44px;
-    padding: 0 10px;
-    font-size: 14px;
-  }
-
-  .student-tabs {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .mobile-chapter-switcher {
     display: grid;
     gap: 10px;
@@ -1142,6 +1109,39 @@ pre {
   .mobile-chapter-switcher-list button.active {
     border-color: #f59e0b;
     background: #fff7ed;
+  }
+
+  .topbar h1 {
+    font-size: 28px;
+  }
+}
+
+@media (max-width: 720px) {
+  .sidebar {
+    padding: 20px 16px;
+    gap: 14px;
+  }
+
+  .brand strong {
+    font-size: 20px;
+  }
+
+  .student-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .student-nav button,
+  .student-tabs button,
+  .quick-actions button,
+  .resource-actions button {
+    min-height: 44px;
+    padding: 0 10px;
+    font-size: 14px;
+  }
+
+  .student-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .student-section,
