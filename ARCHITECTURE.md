@@ -135,7 +135,8 @@ project/
 
 - `GET /api/chapters`：章节列表；老师返回全部本地章节，学生只返回 `student_visible = 1` 的开放章节
 - `GET /api/chapters/:id`：章节详情
-- `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节库到 SQLite；Notion 已删除章节先对学生隐藏，不物理删除本地数据
+- `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；只同步章节元数据，Notion 已删除章节先对学生隐藏，不读取页面正文，不导入习题
+- `POST /api/teacher/chapters/:id/sync-teaching-page-from-notion`：老师手动同步当前章节 Notion 页面正文到本地教学页缓存
 - `POST /api/teacher/chapters/:id/show-to-students`：老师将章节开放给学生
 - `POST /api/teacher/chapters/:id/hide-from-students`：老师将章节对学生隐藏
 - `POST /api/chapters/:id/raw-pages/from-file`：上传文件并用 Qwen 生成原始页
@@ -158,7 +159,7 @@ project/
 
 章节教学页生成链路：
 
-1. 老师点击章节侧边栏刷新时，后端从 Notion 章节库同步手动创建和网页创建的章节到 SQLite
+1. 老师点击章节侧边栏刷新时，后端从 Notion 章节库同步手动创建和网页创建的章节元数据到 SQLite
 2. 老师在章节详情页上传图片、PDF、CSV、TXT 或 MD
 3. 后端调用 Qwen，将资料转换为 Markdown 原始页
 4. 后端把 Markdown 原始页写入 Notion 原始页面库，并关联当前章节
@@ -170,6 +171,13 @@ project/
 10. Codex Agent C 生成章节教学页 Markdown
 11. 后端先把教学页追加/写回 Notion 章节库，再保存到 SQLite `teaching_pages`
 12. 前端从后端读取最新教学页，用于网页展示和导出
+
+既有 Notion Agent 内容同步链路：
+
+- 老师先点击“同步 Notion 章节列表”，只更新本地章节列表，避免全量读取正文导致请求超时
+- 老师选中当前章节后点击“同步当前章节教学页”，后端只读取该章节 Notion 页面正文并写入 `teaching_pages`
+- 老师点击“导入当前章节习题”，后端只从当前章节最新教学页解析自编题并写入 `exam_questions`
+- 学生端只读取本地已开放章节、教学页和题库，不直接调用 Notion
 
 Logseq 版 Notion Agent 触发链路：
 

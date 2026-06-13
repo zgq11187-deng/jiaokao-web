@@ -223,6 +223,16 @@ app.post("/api/teacher/sync-chapters-from-notion", requireTeacher, async (_req, 
   }
 });
 
+app.post("/api/teacher/chapters/:id/sync-teaching-page-from-notion", requireTeacher, async (req, res) => {
+  try {
+    const chapter = mustChapter(req.params.id);
+    const action = await syncTeachingPageFromNotionChapter(chapter);
+    res.json({ ok: true, action });
+  } catch (error) {
+    res.status(500).json({ error: `同步当前章节教学页失败：${error.message}` });
+  }
+});
+
 app.post("/api/teacher/chapters/:id/show-to-students", requireTeacher, (req, res) => {
   updateChapterStudentVisibility(req, res, 1);
 });
@@ -275,7 +285,7 @@ app.get("/api/chapters/:id", requireAuthorized, (req, res) => {
     chapter,
     rawPages: all(`SELECT * FROM raw_pages WHERE chapter_id = ? ORDER BY id DESC`, [chapter.id]),
     outlines: all(`SELECT * FROM outline_analyses WHERE chapter_id = ? ORDER BY id DESC`, [chapter.id]),
-    questions: all(`SELECT * FROM exam_questions WHERE chapter_id = ? ORDER BY id DESC`, [chapter.id]),
+    questions: listPracticeQuestions(chapter.id),
     teachingPages: all(
       `SELECT * FROM teaching_pages WHERE chapter_id = ? ORDER BY created_at DESC, id DESC`,
       [chapter.id],
@@ -349,6 +359,7 @@ app.post("/api/questions/:id/attempt", requireAuthorized, (req, res) => {
       attempt: saved,
       result: {
         isCorrect,
+        selectedAnswer,
         correctAnswer: question.answer || "未填写",
         analysis: question.analysis || "暂无解析",
       },
@@ -400,6 +411,7 @@ app.get("/api/mock-exam/questions", requireAuthorized, (req, res) => {
   const filters = [];
   if (chapterId) filters.push("exam_questions.chapter_id = ?");
   if (req.user.role !== "teacher") filters.push("chapters.student_visible = 1");
+  filters.push(`(exam_questions.source IS NULL OR exam_questions.source NOT LIKE '%（重复保留）%')`);
   const chapterFilter = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   if (chapterId) params.push(chapterId);
   params.push(limit);
@@ -887,6 +899,16 @@ app.post("/api/chapters/:id/import-teaching-questions", requireTeacher, async (r
   }
 });
 
+app.post("/api/chapters/:id/cleanup-duplicate-questions", requireTeacher, (req, res) => {
+  try {
+    const chapter = mustChapter(req.params.id);
+    const result = cleanupDuplicateTeachingQuestions(chapter);
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post("/api/chapters/:id/generate-teaching-page", requireTeacher, async (req, res) => {
   try {
     const chapter = mustChapter(req.params.id);
@@ -1096,14 +1118,14 @@ async function runImportExamAgent(chapter, options = {}) {
 async function importTeachingQuestions(chapter) {
   const warnings = [];
   try {
-    logStep(chapter.id, "import-teaching-questions", "running", "导入教学页自编题");
+    logStep(chapter.id, "import-teaching-questions", "running", "导入当前章节习题");
     const { markdown, source } = await loadTeachingQuestionSource(chapter);
     if (!markdown.trim()) {
       throw new Error("未找到可读取的教学页正文，无法导入自编题");
     }
     const parsed = parseTeachingQuestions(markdown, chapter, warnings);
     if (!parsed.questions.length) {
-      throw new Error("未在教学页中解析到习题，请检查是否包含“章节习题 / 单章题库 / 本章练习 / 本节巩固练习 / 自编题 / 随堂练习”区块");
+      throw new Error("未在教学页中解析到习题，请检查是否包含“章节习题 / 单章题库 / 本章练习 / 本节巩固练习 / 历年真题演练 / 2026 新增题库 / 自编题 / 随堂练习”区块");
     }
     let imported = 0;
     let updated = 0;
@@ -1159,7 +1181,7 @@ async function importTeachingQuestions(chapter) {
       skipped,
       warnings,
     };
-    logStep(chapter.id, "import-teaching-questions", "success", "教学页自编题导入完成", result);
+    logStep(chapter.id, "import-teaching-questions", "success", "当前章节习题导入完成", result);
     return result;
   } catch (error) {
     logStep(chapter?.id, "import-teaching-questions", "error", error.message);
@@ -1200,6 +1222,9 @@ function getTeachingQuestionSectionMarkers() {
     "本节练习",
     "本节巩固练习",
     "按本节内容自编",
+    "历年真题演练",
+    "新增题库",
+    "2026 新增题库",
     "非历年真题",
     "自编题",
     "随堂练习",
@@ -1212,13 +1237,17 @@ function parseTeachingQuestions(markdown, chapter, warnings = []) {
   const expectedCount = parseExpectedQuestionCount(scoped) || parseExpectedQuestionCount(normalized);
   const lines = scoped.split(/\r?\n/);
   const questions = [];
+  const finishedQuestions = [];
   let currentType = "";
   let current = null;
 
   function finishCurrent() {
     if (!current) return;
     const built = buildTeachingQuestion(current, chapter);
-    if (built?.stem) questions.push(built);
+    if (built?.stem) {
+      questions.push(built);
+      finishedQuestions.push(built);
+    }
     current = null;
   }
 
@@ -1233,9 +1262,12 @@ function parseTeachingQuestions(markdown, chapter, warnings = []) {
     }
     if (/^<details>\s*$/i.test(line)) {
       const parsed = collectDetailsText(lines, index);
-      if (current) current.details = parsed.text;
+      if (current) {
+        current.details = parsed.text;
+        finishCurrent();
+      }
+      applyGroupedAnswerDetails(finishedQuestions, parsed.text);
       index = parsed.endIndex;
-      finishCurrent();
       continue;
     }
     if (/^(?:参考答案|答案与解析|答案)[：:]?\s*/.test(line) && current) {
@@ -1245,11 +1277,12 @@ function parseTeachingQuestions(markdown, chapter, warnings = []) {
       finishCurrent();
       continue;
     }
-    const questionStart = parseNumberedQuestionStart(line);
+    const questionStart = parseTeachingQuestionStart(line);
     if (questionStart && currentType) {
       finishCurrent();
       const stem = questionStart[2].trim();
       current = {
+        number: questionStart[1],
         type: inferQuestionTypeFromStem(stem, currentType),
         stemLines: [stem],
         options: [],
@@ -1312,16 +1345,18 @@ function parseExpectedQuestionCount(markdown) {
 }
 
 function detectQuestionTypeHeading(line) {
-  if (parseNumberedQuestionStart(line) || /^[A-H][.．、]\s*/i.test(line)) return "";
+  if (parseTeachingQuestionStart(line) || /^[A-H][.．、]\s*/i.test(line)) return "";
   const normalized = line
     .replace(/^#+\s*/, "")
     .replace(/[*_`]/g, "")
+    .replace(/[🎯💡📌🆕🔹▪️]/gu, "")
     .replace(/[：:]/g, "")
     .trim();
   const headingLike =
     /^#{1,6}\s*/.test(line) ||
     /^[一二三四五六七八九十]+[、.．]\s*/.test(normalized) ||
     /^(单选题?|单项选择题?|选择题?|多选题?|多项选择题?|判断题?|简答题?|操作题?)$/.test(normalized) ||
+    /(?:历年真题演练|新增题库|单章题库|章节习题|本章练习|本节练习|随堂练习|自编题).*(?:单选|单项选择|多选|多项选择|判断|简答|操作)/.test(normalized) ||
     /简答\s*[/／]\s*操作题?/.test(normalized);
   if (!headingLike) return "";
   if (/简答/.test(normalized) && /操作/.test(normalized)) return MIXED_WRITTEN_QUESTION_TYPE;
@@ -1346,6 +1381,21 @@ function parseNumberedQuestionStart(line) {
     .replace(/^[-*]\s*/, "")
     .replace(/^[^\d]+(?=\d+[.、])/u, "");
   return /^(\d+)[.、]\s*(.+)$/.exec(cleaned);
+}
+
+function parseBracketedQuestionStart(line) {
+  const cleaned = String(line || "")
+    .trim()
+    .replace(/^[-*]\s*/, "")
+    .replace(/^[🎯💡📌🆕🔹▪️]\s*/u, "")
+    .trim();
+  const match = /^(【[^】]*(?:题|单选|多选|判断|简答|操作)[^】]*】)\s*(.+)$/.exec(cleaned);
+  if (!match) return null;
+  return ["", match[1], `${match[1]} ${match[2]}`.trim()];
+}
+
+function parseTeachingQuestionStart(line) {
+  return parseNumberedQuestionStart(line) || parseBracketedQuestionStart(line);
 }
 
 function collectDetailsText(lines, startIndex) {
@@ -1375,7 +1425,7 @@ function collectLooseAnswerText(lines, startIndex) {
       endIndex = index;
       continue;
     }
-    if (detectQuestionTypeHeading(line) || parseNumberedQuestionStart(line) || /^<details>\s*$/i.test(line)) {
+    if (detectQuestionTypeHeading(line) || parseTeachingQuestionStart(line) || /^<details>\s*$/i.test(line)) {
       endIndex = index - 1;
       break;
     }
@@ -1393,7 +1443,7 @@ function buildTeachingQuestion(raw, chapter) {
     .replace(/^简答题[：:]\s*/, "")
     .trim();
   if (!stem) return null;
-  const options = raw.options.length ? raw.options : split.options;
+  const options = cleanTeachingOptions(raw.options.length ? raw.options : split.options);
   const type = inferFinalTeachingQuestionType({
     stem: split.stem.trim(),
     currentType: raw.type,
@@ -1402,6 +1452,7 @@ function buildTeachingQuestion(raw, chapter) {
   });
   return {
     stem,
+    number: raw.number || "",
     type,
     options: /单选|多选/.test(type) ? options.join("\n") : "",
     answer: detail.answer,
@@ -1413,9 +1464,50 @@ function buildTeachingQuestion(raw, chapter) {
   };
 }
 
+function applyGroupedAnswerDetails(questions, details) {
+  const grouped = parseGroupedAnswerDetails(details);
+  if (!grouped.size) return;
+  for (const question of questions) {
+    const answerDetail = grouped.get(String(question.number || ""));
+    if (!answerDetail) continue;
+    question.answer = answerDetail.answer || question.answer;
+    question.analysis = answerDetail.analysis || question.analysis;
+    question.type = normalizeChoiceQuestionType({
+      stem: question.stem,
+      type: question.type,
+      options: question.options,
+      answer: question.answer,
+    });
+  }
+}
+
+function parseGroupedAnswerDetails(details) {
+  const result = new Map();
+  const text = String(details || "")
+    .replace(/(?:参考答案|答案与解析|答案)[：:]?/g, " ")
+    .replace(/\r/g, "\n");
+  const choiceAnswerPattern = "[A-H](?:\\s*(?:[,，、/／和及])?\\s*[A-H])*";
+  const pattern = new RegExp(
+    `(?:^|[\\s　])(\\d{1,3})\\s*[-－—.、]\\s*(${choiceAnswerPattern}|√|×|x|对|错|正确|错误)([\\s\\S]*?)(?=(?:^|[\\s　])\\d{1,3}\\s*[-－—.、]\\s*(?:${choiceAnswerPattern}|√|×|x|对|错|正确|错误)|$)`,
+    "gim",
+  );
+  for (const match of text.matchAll(pattern)) {
+    const number = String(Number(match[1]));
+    const answer = normalizeParsedTeachingAnswer(match[2]);
+    const analysis = normalizeParsedTeachingAnalysis(match[3] || "");
+    if (answer) {
+      result.set(number, {
+        answer,
+        analysis: analysis || "未填写",
+      });
+    }
+  }
+  return result;
+}
+
 function splitInlineChoiceOptions(text) {
   const source = String(text || "").trim();
-  const matches = [...source.matchAll(/(?:^|\s)([A-H])[.．、]\s*/g)];
+  const matches = [...source.matchAll(/(?:^|\s|，|。|；|：)([A-H])[.．、]\s*/g)];
   if (matches.length < 2) return { stem: source, options: [] };
   const firstOptionIndex = matches[0].index + matches[0][0].search(/[A-H]/);
   const stem = source.slice(0, firstOptionIndex).trim();
@@ -1431,10 +1523,23 @@ function splitInlineChoiceOptions(text) {
   return { stem: stem || source, options };
 }
 
+function cleanTeachingOptions(options) {
+  return (options || [])
+    .map((option) =>
+      String(option || "")
+        .replace(/\s*▍[\s\S]*$/u, "")
+        .replace(/\s*(?:变式题|拓展题)[（(][^）)]*[）)]\s*$/u, "")
+        .trim(),
+    )
+    .filter((option) => /^[A-H][.．、]\s*\S/.test(option));
+}
+
 function inferFinalTeachingQuestionType({ stem, currentType, options, answer }) {
-  const normalizedAnswer = String(answer || "").replace(/[^A-Ha-h]/g, "").toUpperCase();
+  const normalizedAnswer = normalizeChoiceAnswerLetters(answer);
   if (options.length >= 2) {
-    if (currentType === "多选题" || normalizedAnswer.length > 1) return "多选题";
+    if (normalizedAnswer.length > 1) return "多选题";
+    if (normalizedAnswer.length === 1) return "单选题";
+    if (currentType === "多选题") return "多选题";
     return "单选题";
   }
   if (/^操作题[：:]/.test(stem)) return "操作题";
@@ -1447,12 +1552,39 @@ function parseAnswerAndAnalysis(details) {
   const text = String(details || "").trim();
   const answerMatch = /(?:参考答案|答案)[：:]\s*([\s\S]*?)(?=\n\s*(?:解析|考点归属)[：:]|$)/.exec(text);
   const analysisMatch = /解析[：:]\s*([\s\S]*?)(?=\n\s*考点归属[：:]|$)/.exec(text);
-  const answer = (answerMatch?.[1] || "").trim();
-  const analysis = (analysisMatch?.[1] || text.replace(answerMatch?.[0] || "", "").trim()).trim();
+  const rawAnswer = (answerMatch?.[1] || "").trim();
+  const answer = normalizeParsedTeachingAnswer(rawAnswer);
+  const analysisSource = (analysisMatch?.[1] || rawAnswer || text.replace(answerMatch?.[0] || "", "").trim()).trim();
+  const analysis = normalizeParsedTeachingAnalysis(analysisSource);
   return {
     answer: answer || "未填写",
     analysis: analysis || text || "未填写",
   };
+}
+
+function normalizeParsedTeachingAnswer(answer) {
+  const raw = String(answer || "").trim();
+  if (!raw) return "";
+  if (/^(√|对|正确)(?:\s|。|，|,|\.|（|\(|$)/.test(raw)) return "对";
+  if (/^(×|x|错|错误)(?:\s|。|，|,|\.|（|\(|$)/i.test(raw)) return "错";
+  const firstLine = raw.split(/\r?\n/)[0].trim();
+  const prefixedLetters = firstLine.match(/^答案\s*[：:]?\s*([A-H](?:\s*(?:[,，、/／和及])?\s*[A-H])*)/i);
+  const leadingLetters = firstLine.match(/^([A-H](?:\s*(?:[,，、/／和及])?\s*[A-H])*)/i);
+  const letterText = prefixedLetters?.[1] || leadingLetters?.[1] || "";
+  if (letterText) {
+    const letters = letterText.match(/[A-H]/gi) || [];
+    return [...new Set(letters.map((letter) => letter.toUpperCase()))].sort().join("");
+  }
+  return firstLine;
+}
+
+function normalizeParsedTeachingAnalysis(analysis) {
+  return String(analysis || "")
+    .trim()
+    .replace(/^(?:参考答案|答案)[：:]\s*/i, "")
+    .replace(/^[A-H](?:\s*(?:[,，、/／和及])?\s*[A-H])*\s*[。．.、，,；;：:]?\s*/i, "")
+    .replace(/^(√|×|x|对|错|正确|错误)\s*(?:[（(][^)）]+[）)])?\s*[。．.、，,；;：:]?\s*/i, "")
+    .trim();
 }
 
 function deriveTeachingQuestionTags(stem, chapter) {
@@ -1487,23 +1619,42 @@ function findExistingTeachingQuestion(chapterId, question) {
 
 function normalizeQuestionDedupKey(stem) {
   const split = splitInlineChoiceOptions(stem);
-  return normalizeText(split.stem || stem);
+  return normalizeText(stripQuestionDedupNoise(split.stem || stem));
+}
+
+function stripQuestionDedupNoise(stem) {
+  return String(stem || "")
+    .replace(/^【[^】]+】\s*/, "")
+    .replace(/\s*[（(]\s*[　\s]*[）)]/g, "")
+    .replace(/\s*▍[\s\S]*$/u, "")
+    .replace(/[A-H][.．、]\s*[\s\S]*$/u, "")
+    .replace(/第\s*\d+\s*[题問]\s*/g, "")
+    .replace(/[\s　]+/g, "");
 }
 
 function buildQuestionPatch(existing, question) {
   const fields = [];
   const values = [];
   const canCorrect = isTeachingAiQuestion(existing.source);
+  const correctedQuestion = {
+    ...question,
+    type: normalizeChoiceQuestionType({
+      stem: question.stem,
+      type: question.type,
+      options: question.options,
+      answer: question.answer,
+    }),
+  };
   const updates = [
-    ["stem", question.stem],
-    ["type", question.type],
-    ["options", question.options],
-    ["answer", question.answer],
-    ["analysis", question.analysis],
-    ["difficulty", question.difficulty],
-    ["source", question.source],
-    ["year", question.year],
-    ["knowledge_tags_json", JSON.stringify(question.knowledgeTags || [])],
+    ["stem", correctedQuestion.stem],
+    ["type", correctedQuestion.type],
+    ["options", correctedQuestion.options],
+    ["answer", correctedQuestion.answer],
+    ["analysis", correctedQuestion.analysis],
+    ["difficulty", correctedQuestion.difficulty],
+    ["source", correctedQuestion.source],
+    ["year", correctedQuestion.year],
+    ["knowledge_tags_json", JSON.stringify(correctedQuestion.knowledgeTags || [])],
   ];
   for (const [field, value] of updates) {
     const next = String(value || "").trim();
@@ -1523,6 +1674,182 @@ function buildQuestionPatch(existing, question) {
 
 function isTeachingAiQuestion(source) {
   return String(source || "").startsWith("Notion AI 自编题");
+}
+
+function isDuplicateRetainedQuestion(source) {
+  return String(source || "").includes("（重复保留）");
+}
+
+function cleanupDuplicateTeachingQuestions(chapter) {
+  const candidates = all(
+    `SELECT * FROM exam_questions
+     WHERE chapter_id = ? AND source LIKE 'Notion AI 自编题%'`,
+    [chapter.id],
+  );
+  const groups = new Map();
+  for (const question of candidates) {
+    const key = normalizeQuestionDedupKey(question.stem);
+    if (!key) continue;
+    const group = groups.get(key) || [];
+    group.push(question);
+    groups.set(key, group);
+  }
+
+  let merged = 0;
+  let deleted = 0;
+  let retained = 0;
+  let groupsCleaned = 0;
+  let typeCorrected = 0;
+
+  for (const question of candidates) {
+    const nextType = normalizeChoiceQuestionType({
+      stem: question.stem,
+      type: question.type,
+      options: question.options,
+      answer: question.answer,
+    });
+    if (nextType && nextType !== question.type) {
+      run(`UPDATE exam_questions SET type = ? WHERE id = ?`, [nextType, question.id]);
+      question.type = nextType;
+      typeCorrected++;
+    }
+  }
+
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    groupsCleaned++;
+    const sorted = [...group].sort((a, b) => {
+      const scoreDiff = teachingQuestionQualityScore(b) - teachingQuestionQualityScore(a);
+      return scoreDiff || b.id - a.id;
+    });
+    const keeper = sorted[0];
+    const patch = buildBestQuestionPatch(keeper, sorted.slice(1));
+    if (patch.fields.length) {
+      run(
+        `UPDATE exam_questions SET ${patch.fields.join(", ")} WHERE id = ?`,
+        [...patch.values, keeper.id],
+      );
+      merged++;
+    }
+    for (const duplicate of sorted.slice(1)) {
+      const attemptCount = get(
+        `SELECT COUNT(*) AS count FROM question_attempts WHERE question_id = ?`,
+        [duplicate.id],
+      )?.count || 0;
+      if (attemptCount) {
+        const nextSource = buildDuplicateRetainedSource(duplicate.source);
+        if (nextSource !== duplicate.source) {
+          run(`UPDATE exam_questions SET source = ? WHERE id = ?`, [nextSource, duplicate.id]);
+        }
+        retained++;
+      } else {
+        run(`DELETE FROM exam_questions WHERE id = ?`, [duplicate.id]);
+        deleted++;
+      }
+    }
+  }
+
+  const result = { groups: groupsCleaned, merged, deleted, retained, typeCorrected };
+  logStep(chapter.id, "cleanup-duplicate-questions", "success", "当前章节重复题清理完成", result);
+  return result;
+}
+
+function buildBestQuestionPatch(keeper, duplicates) {
+  const fields = [];
+  const values = [];
+  const allQuestions = [keeper, ...duplicates];
+  const bestByField = {
+    stem: selectBestFieldValue(allQuestions, "stem"),
+    options: selectBestFieldValue(allQuestions, "options"),
+    answer: selectBestFieldValue(allQuestions, "answer"),
+    analysis: selectBestFieldValue(allQuestions, "analysis"),
+  };
+  bestByField.type = normalizeChoiceQuestionType({
+    stem: bestByField.stem,
+    type: selectBestFieldValue(allQuestions, "type"),
+    options: bestByField.options,
+    answer: bestByField.answer,
+  });
+  for (const [field, value] of Object.entries(bestByField)) {
+    if (!String(value || "").trim()) continue;
+    if (String(keeper[field] || "").trim() === String(value || "").trim()) continue;
+    fields.push(`${field} = ?`);
+    values.push(value);
+  }
+  return { fields, values };
+}
+
+function selectBestFieldValue(questions, field) {
+  return [...questions]
+    .sort((a, b) => fieldQualityScore(b, field) - fieldQualityScore(a, field) || b.id - a.id)[0]?.[field] || "";
+}
+
+function fieldQualityScore(question, field) {
+  const value = String(question?.[field] || "").trim();
+  if (!value || isMissingQuestionValue(value)) return 0;
+  if (field === "stem") return value.includes("A.") || value.includes("A．") ? 2 : 10;
+  if (field === "options") return optionQualityScore(value);
+  if (field === "answer") return normalizeAnswerForCompare(value) ? 10 : 1;
+  if (field === "analysis") return value.length > 10 ? 10 : 3;
+  if (field === "type") return /单选题|多选题|判断题|简答题|操作题/.test(value) ? 10 : 1;
+  return 1;
+}
+
+function teachingQuestionQualityScore(question) {
+  return (
+    fieldQualityScore(question, "stem") +
+    fieldQualityScore(question, "type") +
+    fieldQualityScore(question, "options") * 2 +
+    fieldQualityScore(question, "answer") * 3 +
+    fieldQualityScore(question, "analysis")
+  );
+}
+
+function optionQualityScore(options) {
+  const labels = new Set(
+    String(options || "")
+      .split(/\r?\n/)
+      .map((line) => /^([A-H])[.．、]/.exec(line.trim())?.[1])
+      .filter(Boolean),
+  );
+  let score = labels.size;
+  if (labels.has("A")) score += 4;
+  if (labels.has("B")) score += 2;
+  if (labels.has("C")) score += 2;
+  if (labels.has("D")) score += 2;
+  if (/▍|变式题|拓展题/.test(options || "")) score -= 3;
+  return score;
+}
+
+function normalizeChoiceQuestionType({ stem, type, options, answer }) {
+  const optionCount = countChoiceOptions(options);
+  const normalizedAnswer = normalizeChoiceAnswerLetters(answer);
+  if (optionCount >= 2) {
+    if (normalizedAnswer.length > 1) return "多选题";
+    if (normalizedAnswer.length === 1) return "单选题";
+    return type === "多选题" ? "多选题" : "单选题";
+  }
+  if (/^操作题[：:]/.test(stem || "")) return "操作题";
+  if (/^简答题[：:]/.test(stem || "") || /^(简述|说明|写出)/.test(stem || "")) return "简答题";
+  return type || "简答题";
+}
+
+function normalizeChoiceAnswerLetters(answer) {
+  const raw = String(answer || "").trim();
+  if (!raw || isMissingQuestionValue(raw)) return "";
+  if (!/^[A-Ha-h](?:\s*(?:[,，、/／和及])?\s*[A-Ha-h])*$/.test(raw)) return "";
+  const letters = raw.match(/[A-H]/gi) || [];
+  return [...new Set(letters.map((letter) => letter.toUpperCase()))].sort().join("");
+}
+
+function countChoiceOptions(options) {
+  const values = Array.isArray(options) ? options : String(options || "").split(/\r?\n/);
+  return values.filter((line) => /^[A-H][.．、]\s*\S/.test(String(line || "").trim())).length;
+}
+
+function buildDuplicateRetainedSource(source) {
+  const value = String(source || "Notion AI 自编题").trim();
+  return isDuplicateRetainedQuestion(value) ? value : `${value}（重复保留）`;
 }
 
 function isCorrectableTeachingQuestionField(field) {
@@ -1817,10 +2144,10 @@ app.get("/api/chapters/:id/export/:kind", requireAuthorized, async (req, res) =>
     } else if (kind === "site") {
       sendDownload(res, buildHtmlDownload(chapter.title, markdown), `${chapter.title}.html`, "text/html; charset=utf-8");
     } else if (kind === "question-bank") {
-      let questions = all(`SELECT * FROM exam_questions WHERE chapter_id = ?`, [chapter.id]);
+      let questions = listPracticeQuestions(chapter.id);
       if (!questions.length && req.user.role === "teacher") {
         await safeImportTeachingQuestions(chapter);
-        questions = all(`SELECT * FROM exam_questions WHERE chapter_id = ?`, [chapter.id]);
+        questions = listPracticeQuestions(chapter.id);
       }
       sendDownload(res, buildQuestionBankHtml(chapter.title, questions), `${chapter.title}-题库.html`, "text/html; charset=utf-8");
     } else if (kind === "ppt") {
@@ -1844,6 +2171,25 @@ function mustQuestion(id) {
   const question = get(`SELECT * FROM exam_questions WHERE id = ?`, [id]);
   if (!question) throw new Error("题目不存在");
   return question;
+}
+
+function listPracticeQuestions(chapterId) {
+  return all(
+    `SELECT * FROM exam_questions
+     WHERE chapter_id = ?
+       AND (source IS NULL OR source NOT LIKE '%（重复保留）%')
+     ORDER BY
+       CASE type
+         WHEN '单选题' THEN 1
+         WHEN '多选题' THEN 2
+         WHEN '判断题' THEN 3
+         WHEN '简答题' THEN 4
+         WHEN '操作题' THEN 5
+         ELSE 9
+       END,
+       id DESC`,
+    [chapterId],
+  );
 }
 
 function saveQuestionAttempt({ userId, question, mode, selectedAnswer, isCorrect }) {
@@ -1873,8 +2219,8 @@ function normalizeAnswerForCompare(answer) {
   const raw = String(answer || "").trim();
   if (!raw) return "";
   const lower = raw.toLowerCase();
-  if (/^(√|对|正确|true|t|yes|y)$/i.test(lower)) return "TRUE";
-  if (/^(×|x|错|错误|false|f|no|n)$/i.test(lower)) return "FALSE";
+  if (/^(√|对|正确|true|t|yes|y)$/i.test(lower) || /^(√|对|正确)(?:\s|。|，|,|\.|（|\()/i.test(raw)) return "TRUE";
+  if (/^(×|x|错|错误|false|f|no|n)$/i.test(lower) || /^(×|x|错|错误)(?:\s|。|，|,|\.|（|\()/i.test(raw)) return "FALSE";
   const letters = raw.match(/[A-H]/gi);
   if (letters?.length) {
     return [...new Set(letters.map((letter) => letter.toUpperCase()))].sort().join("");
@@ -1901,28 +2247,11 @@ async function syncChaptersFromNotion() {
     updated: 0,
     hidden: 0,
     kept: 0,
-    teachingCreated: 0,
-    teachingUpdated: 0,
-    teachingSkipped: 0,
-    teachingFailed: 0,
-    questionsImported: 0,
-    questionsUpdated: 0,
-    questionsSkipped: 0,
-    questionsFailed: 0,
   };
   const notionPageIds = new Set(pages.map((page) => page.id));
   for (const page of pages) {
-    const { action, chapter } = upsertChapterFromNotionPage(page);
+    const { action } = upsertChapterFromNotionPage(page);
     result[action] = (result[action] || 0) + 1;
-    const teachingAction = await syncTeachingPageFromNotionChapter(page, chapter);
-    result[teachingAction] = (result[teachingAction] || 0) + 1;
-    if (["teachingCreated", "teachingUpdated"].includes(teachingAction)) {
-      const questionResult = await safeImportTeachingQuestions(chapter);
-      result.questionsImported += questionResult.imported || 0;
-      result.questionsUpdated += questionResult.updated || 0;
-      result.questionsSkipped += questionResult.skipped || 0;
-      if (questionResult.failed) result.questionsFailed += 1;
-    }
   }
   const localNotionChapters = all(
     `SELECT id, notion_page_id, student_visible
@@ -1978,9 +2307,12 @@ function upsertChapterFromNotionPage(page) {
   };
 }
 
-async function syncTeachingPageFromNotionChapter(page, chapter) {
+async function syncTeachingPageFromNotionChapter(chapter) {
+  if (!chapter.notion_page_id) {
+    throw new Error("当前章节没有关联 Notion 页面");
+  }
   try {
-    const markdown = await readPageMarkdown(page.id);
+    const markdown = await readPageMarkdown(chapter.notion_page_id);
     if (!isUsefulNotionTeachingMarkdown(markdown)) {
       return "teachingSkipped";
     }
@@ -1988,7 +2320,7 @@ async function syncTeachingPageFromNotionChapter(page, chapter) {
       `SELECT * FROM teaching_pages
        WHERE chapter_id = ? AND notion_page_id = ?
        ORDER BY id DESC LIMIT 1`,
-      [chapter.id, page.id],
+      [chapter.id, chapter.notion_page_id],
     );
     if (existing) {
       run(
@@ -2001,9 +2333,9 @@ async function syncTeachingPageFromNotionChapter(page, chapter) {
     }
     run(
       `INSERT INTO teaching_pages
-       (chapter_id, markdown, summary, notion_page_id)
-       VALUES (?, ?, ?, ?)`,
-      [chapter.id, markdown, summarizeTeachingMarkdown(markdown), page.id],
+      (chapter_id, markdown, summary, notion_page_id)
+      VALUES (?, ?, ?, ?)`,
+      [chapter.id, markdown, summarizeTeachingMarkdown(markdown), chapter.notion_page_id],
     );
     return "teachingCreated";
   } catch (error) {
@@ -2012,7 +2344,7 @@ async function syncTeachingPageFromNotionChapter(page, chapter) {
       "sync-notion-teaching-page",
       "warning",
       `同步 Notion 章节正文失败：${error.message}`,
-      { notionPageId: page.id },
+      { notionPageId: chapter.notion_page_id },
     );
     return "teachingFailed";
   }

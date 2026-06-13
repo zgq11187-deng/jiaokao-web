@@ -188,7 +188,7 @@ function App() {
   }
 
   async function syncChaptersFromNotion() {
-    await withBusy("同步 Notion 章节", async () => {
+    await withBusy("同步 Notion 章节列表", async () => {
       const data = await request("/api/teacher/sync-chapters-from-notion", {
         method: "POST",
       });
@@ -196,9 +196,45 @@ function App() {
       const result = data.syncResult;
       if (result) {
         setSyncNotice(
-          `Notion 同步完成：章节新增 ${result.created || 0}，章节更新 ${result.updated || 0}，隐藏 ${result.hidden || 0}；教学页新增 ${result.teachingCreated || 0}，教学页更新 ${result.teachingUpdated || 0}，空页面跳过 ${result.teachingSkipped || 0}，失败 ${result.teachingFailed || 0}；习题导入 ${result.questionsImported || 0}，更新 ${result.questionsUpdated || 0}，跳过 ${result.questionsSkipped || 0}，失败 ${result.questionsFailed || 0}。`,
+          `Notion 章节列表同步完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，隐藏 ${result.hidden || 0}，保留 ${result.kept || 0}。`,
         );
       }
+    });
+  }
+
+  async function syncCurrentTeachingPageFromNotion() {
+    if (!selectedId) {
+      setError("请选择章节");
+      return;
+    }
+    await withBusy("同步当前章节教学页", async () => {
+      const data = await request(`/api/teacher/chapters/${selectedId}/sync-teaching-page-from-notion`, {
+        method: "POST",
+      });
+      const labels = {
+        teachingCreated: "已新增当前章节教学页",
+        teachingUpdated: "已更新当前章节教学页",
+        teachingSkipped: "当前 Notion 章节正文为空或过短，已跳过",
+        teachingFailed: "当前章节教学页同步失败，请查看生成日志",
+      };
+      setSyncNotice(labels[data.action] || "当前章节教学页同步完成。");
+      await loadDetail();
+    });
+  }
+
+  async function cleanupDuplicateQuestions() {
+    if (!selectedId) {
+      setError("请选择章节");
+      return;
+    }
+    await withBusy("清理当前章节重复题", async () => {
+      const data = await request(`/api/chapters/${selectedId}/cleanup-duplicate-questions`, {
+        method: "POST",
+      });
+      setSyncNotice(
+        `当前章节重复题清理完成：处理 ${data.groups || 0} 组，修正题型 ${data.typeCorrected || 0}，合并 ${data.merged || 0}，删除 ${data.deleted || 0}，保留历史 ${data.retained || 0}。`,
+      );
+      await loadDetail();
     });
   }
 
@@ -497,7 +533,7 @@ function App() {
             ) : null}
             {isTeacher ? (
               <button onClick={syncChaptersFromNotion} disabled={Boolean(busy)}>
-                <RefreshCw size={15} /> 同步 Notion
+                <RefreshCw size={15} /> 同步 Notion 章节列表
               </button>
             ) : (
               <button className="icon-btn" onClick={loadChapters} title="刷新章节">
@@ -561,6 +597,8 @@ function App() {
             uploadRawPage={uploadRawPage}
             createLecturePage={createLecturePage}
             runStep={runStep}
+            syncCurrentTeachingPageFromNotion={syncCurrentTeachingPageFromNotion}
+            cleanupDuplicateQuestions={cleanupDuplicateQuestions}
             scanNotionTriggers={scanNotionTriggers}
             exportFile={exportFile}
             applications={applications}
@@ -777,6 +815,8 @@ function TeacherWorkspace(props) {
     uploadRawPage,
     createLecturePage,
     runStep,
+    syncCurrentTeachingPageFromNotion,
+    cleanupDuplicateQuestions,
     scanNotionTriggers,
     exportFile,
     applications,
@@ -948,8 +988,14 @@ function TeacherWorkspace(props) {
               <button onClick={() => runStep("generate-teaching-page", "C 生成教学页")} disabled={Boolean(busy)}>
                 C 生成教学页
               </button>
-              <button onClick={() => runStep("import-teaching-questions", "导入教学页自编题")} disabled={Boolean(busy)}>
-                <ClipboardList size={16} /> 导入教学页自编题
+              <button onClick={syncCurrentTeachingPageFromNotion} disabled={Boolean(busy)}>
+                <RefreshCw size={16} /> 同步当前章节教学页
+              </button>
+              <button onClick={() => runStep("import-teaching-questions", "导入当前章节习题")} disabled={Boolean(busy)}>
+                <ClipboardList size={16} /> 导入当前章节习题
+              </button>
+              <button onClick={cleanupDuplicateQuestions} disabled={Boolean(busy)}>
+                <ClipboardList size={16} /> 清理当前章节重复题
               </button>
               <button className="primary" onClick={() => runStep("generate-all", "A/B/C 串联生成")} disabled={Boolean(busy)}>
                 <Sparkles size={16} /> 一键执行 A/B/C
@@ -1443,10 +1489,16 @@ function AnswerResult({ result }) {
         {isCorrect ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
         {isCorrect ? "回答正确" : "需要回看"}
       </strong>
-      <p>正确答案：{result.correctAnswer || "未填写"}</p>
+      <p>你的答案：{result.selectedAnswer || "未记录"}</p>
+      <p>正确答案：{isMissingAnswer(result.correctAnswer) ? "本题答案待老师补充" : result.correctAnswer}</p>
       <p>解析：{result.analysis || "暂无解析"}</p>
     </div>
   );
+}
+
+function isMissingAnswer(answer) {
+  const value = String(answer || "").trim();
+  return !value || value === "未填写" || value === "暂无";
 }
 
 function WrongQuestionCard({ question, index }) {
