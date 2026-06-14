@@ -238,6 +238,32 @@ function App() {
     });
   }
 
+  async function createTeacherQuestion(chapterId, payload) {
+    await request(`/api/teacher/chapters/${chapterId}/questions`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    await loadDetail(chapterId);
+  }
+
+  async function updateTeacherQuestion(questionId, payload) {
+    await request(`/api/teacher/questions/${questionId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    await loadDetail();
+  }
+
+  async function archiveTeacherQuestion(questionId) {
+    await request(`/api/teacher/questions/${questionId}/archive`, { method: "POST" });
+    await loadDetail();
+  }
+
+  async function restoreTeacherQuestion(questionId) {
+    await request(`/api/teacher/questions/${questionId}/restore`, { method: "POST" });
+    await loadDetail();
+  }
+
   async function loadApplications() {
     if (!isTeacher) return;
     const data = await request("/api/teacher/applications");
@@ -363,7 +389,10 @@ function App() {
   async function runStep(step, label) {
     if (!selectedId) return;
     await withBusy(label, async () => {
-      await request(`/api/chapters/${selectedId}/${step}`, { method: "POST" });
+      const data = await request(`/api/chapters/${selectedId}/${step}`, { method: "POST" });
+      if (step === "import-teaching-questions") {
+        setSyncNotice(formatTeachingQuestionImportNotice(data));
+      }
       await loadDetail();
       await loadChapters();
     });
@@ -599,6 +628,10 @@ function App() {
             runStep={runStep}
             syncCurrentTeachingPageFromNotion={syncCurrentTeachingPageFromNotion}
             cleanupDuplicateQuestions={cleanupDuplicateQuestions}
+            createTeacherQuestion={createTeacherQuestion}
+            updateTeacherQuestion={updateTeacherQuestion}
+            archiveTeacherQuestion={archiveTeacherQuestion}
+            restoreTeacherQuestion={restoreTeacherQuestion}
             scanNotionTriggers={scanNotionTriggers}
             exportFile={exportFile}
             applications={applications}
@@ -818,6 +851,10 @@ function TeacherWorkspace(props) {
     runStep,
     syncCurrentTeachingPageFromNotion,
     cleanupDuplicateQuestions,
+    createTeacherQuestion,
+    updateTeacherQuestion,
+    archiveTeacherQuestion,
+    restoreTeacherQuestion,
     scanNotionTriggers,
     exportFile,
     applications,
@@ -829,6 +866,7 @@ function TeacherWorkspace(props) {
     updateChapterVisibility,
   } = props;
   const [studentForm, setStudentForm] = useState(emptyAuthForm);
+  const [questionManagerOpen, setQuestionManagerOpen] = useState(false);
 
   async function submitStudent(event) {
     event.preventDefault();
@@ -992,8 +1030,17 @@ function TeacherWorkspace(props) {
               <button onClick={syncCurrentTeachingPageFromNotion} disabled={Boolean(busy)}>
                 <RefreshCw size={16} /> 同步当前章节教学页
               </button>
-              <button onClick={() => runStep("import-teaching-questions", "导入当前章节习题")} disabled={Boolean(busy)}>
+              <button
+                onClick={async () => {
+                  await runStep("import-teaching-questions", "导入当前章节习题");
+                  setQuestionManagerOpen(true);
+                }}
+                disabled={Boolean(busy)}
+              >
                 <ClipboardList size={16} /> 导入当前章节习题
+              </button>
+              <button onClick={() => setQuestionManagerOpen((open) => !open)} disabled={!selected}>
+                <ClipboardList size={16} /> {questionManagerOpen ? "收起章节习题" : "显示/编辑章节习题"}
               </button>
               <button onClick={cleanupDuplicateQuestions} disabled={Boolean(busy)}>
                 <ClipboardList size={16} /> 清理当前章节重复题
@@ -1014,6 +1061,18 @@ function TeacherWorkspace(props) {
             </FlowCard>
           </section>
 
+          {questionManagerOpen ? (
+            <TeacherQuestionManager
+              selected={selected}
+              questions={detail?.questions || []}
+              busy={busy}
+              createTeacherQuestion={createTeacherQuestion}
+              updateTeacherQuestion={updateTeacherQuestion}
+              archiveTeacherQuestion={archiveTeacherQuestion}
+              restoreTeacherQuestion={restoreTeacherQuestion}
+            />
+          ) : null}
+
           <ChapterPanels detail={detail} />
           <TeachingPreview latestTeaching={latestTeaching} />
         </>
@@ -1021,6 +1080,295 @@ function TeacherWorkspace(props) {
         <div className="empty">左侧新建或选择一个章节。</div>
       )}
     </>
+  );
+}
+
+const questionTypes = ["单选题", "多选题", "判断题", "简答题", "操作题"];
+const difficultyOptions = ["易", "中", "难"];
+
+function formatTeachingQuestionImportNotice(data = {}) {
+  const stats = data.byType || {};
+  const order = ["single", "multiple", "judge", "short", "operation"];
+  const details = order
+    .map((key) => stats[key])
+    .filter(Boolean)
+    .map((item) => `${item.label} ${item.parsed || 0} 题 / 新增 ${item.imported || 0} / 更新 ${item.updated || 0}`)
+    .join("；");
+  const warningText = data.warnings?.length ? `；提示：${data.warnings.join("；")}` : "";
+  return `当前章节习题导入完成：解析 ${data.parsed || 0}，新增 ${data.imported || 0}，更新 ${data.updated || 0}，跳过 ${data.skipped || 0}${details ? `。${details}` : ""}${warningText}`;
+}
+
+function emptyQuestionDraft(chapterTitle = "") {
+  return {
+    type: "单选题",
+    stem: "",
+    options: "A. \nB. \nC. \nD. ",
+    answer: "",
+    analysis: "",
+    difficulty: "中",
+    source: `老师手动题：${chapterTitle}`,
+    year: "",
+    knowledgeTags: "",
+  };
+}
+
+function questionToDraft(question, chapterTitle = "") {
+  return {
+    type: question.type || "单选题",
+    stem: question.stem || "",
+    options: question.options || "A. \nB. \nC. \nD. ",
+    answer: question.answer || "",
+    analysis: question.analysis || "",
+    difficulty: question.difficulty || "中",
+    source: question.source || `老师手动题：${chapterTitle}`,
+    year: question.year || "",
+    knowledgeTags: parseKnowledgeTags(question.knowledge_tags_json).join("，"),
+  };
+}
+
+function draftToQuestionPayload(draft) {
+  return {
+    type: draft.type,
+    stem: draft.stem,
+    options: draft.options,
+    answer: draft.answer,
+    analysis: draft.analysis,
+    difficulty: draft.difficulty,
+    source: draft.source,
+    year: draft.year,
+    knowledgeTags: splitTags(draft.knowledgeTags),
+  };
+}
+
+function TeacherQuestionManager({
+  selected,
+  questions,
+  busy,
+  createTeacherQuestion,
+  updateTeacherQuestion,
+  archiveTeacherQuestion,
+  restoreTeacherQuestion,
+}) {
+  const [showArchived, setShowArchived] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState(() => emptyQuestionDraft(selected?.title));
+  const [newDraft, setNewDraft] = useState(() => emptyQuestionDraft(selected?.title));
+
+  useEffect(() => {
+    setEditingId(null);
+    setDraft(emptyQuestionDraft(selected?.title));
+    setNewDraft(emptyQuestionDraft(selected?.title));
+  }, [selected?.id, selected?.title]);
+
+  const activeQuestions = questions.filter((question) => !question.is_archived);
+  const archivedQuestions = questions.filter((question) => question.is_archived);
+  const visibleQuestions = showArchived ? questions : activeQuestions;
+
+  async function submitNewQuestion(event) {
+    event.preventDefault();
+    await createTeacherQuestion(selected.id, draftToQuestionPayload(newDraft));
+    setNewDraft(emptyQuestionDraft(selected?.title));
+  }
+
+  async function saveQuestion(event, questionId) {
+    event.preventDefault();
+    await updateTeacherQuestion(questionId, draftToQuestionPayload(draft));
+    setEditingId(null);
+  }
+
+  function startEditing(question) {
+    setEditingId(question.id);
+    setDraft(questionToDraft(question, selected?.title));
+  }
+
+  return (
+    <section className="panel question-manager">
+      <div className="panel-title">
+        <ClipboardList size={16} />
+        <h3>章节习题管理</h3>
+        <span>{activeQuestions.length}</span>
+      </div>
+      <p className="muted">
+        当前章节题目可在这里人工校对。隐藏题不会进入学生练习、模拟考试和导出题库。
+      </p>
+
+      <form className="question-edit-form compact" onSubmit={submitNewQuestion}>
+        <div className="question-form-grid">
+          <select
+            value={newDraft.type}
+            onChange={(event) => setNewDraft({ ...newDraft, type: event.target.value })}
+          >
+            {questionTypes.map((type) => (
+              <option key={type}>{type}</option>
+            ))}
+          </select>
+          <select
+            value={newDraft.difficulty}
+            onChange={(event) => setNewDraft({ ...newDraft, difficulty: event.target.value })}
+          >
+            {difficultyOptions.map((difficulty) => (
+              <option key={difficulty}>{difficulty}</option>
+            ))}
+          </select>
+          <input
+            value={newDraft.answer}
+            onChange={(event) => setNewDraft({ ...newDraft, answer: event.target.value })}
+            placeholder="答案，如 A / ABC / 对"
+          />
+          <input
+            value={newDraft.year}
+            onChange={(event) => setNewDraft({ ...newDraft, year: event.target.value })}
+            placeholder="年份 / 模拟 / 自编"
+          />
+        </div>
+        <textarea
+          value={newDraft.stem}
+          onChange={(event) => setNewDraft({ ...newDraft, stem: event.target.value })}
+          placeholder="新增题干"
+          required
+        />
+        {/单选题|多选题/.test(newDraft.type) ? (
+          <textarea
+            value={newDraft.options}
+            onChange={(event) => setNewDraft({ ...newDraft, options: event.target.value })}
+            placeholder="选项，一行一个：A. ..."
+          />
+        ) : null}
+        <textarea
+          value={newDraft.analysis}
+          onChange={(event) => setNewDraft({ ...newDraft, analysis: event.target.value })}
+          placeholder="解析"
+        />
+        <div className="question-form-grid">
+          <input
+            value={newDraft.source}
+            onChange={(event) => setNewDraft({ ...newDraft, source: event.target.value })}
+            placeholder="来源"
+          />
+          <input
+            value={newDraft.knowledgeTags}
+            onChange={(event) => setNewDraft({ ...newDraft, knowledgeTags: event.target.value })}
+            placeholder="知识标签，用逗号分隔"
+          />
+          <button className="primary" disabled={Boolean(busy) || !newDraft.stem.trim()}>
+            <Plus size={16} /> 新增题目
+          </button>
+        </div>
+      </form>
+
+      <div className="question-manager-toolbar">
+        <strong>当前题目</strong>
+        <button onClick={() => setShowArchived((value) => !value)} disabled={!archivedQuestions.length}>
+          {showArchived ? "隐藏归档题" : `显示归档题 ${archivedQuestions.length}`}
+        </button>
+      </div>
+
+      <div className="question-editor-list">
+        {visibleQuestions.length ? (
+          visibleQuestions.map((question) => (
+            <article key={question.id} className={question.is_archived ? "question-editor archived" : "question-editor"}>
+              {editingId === question.id ? (
+                <form className="question-edit-form" onSubmit={(event) => saveQuestion(event, question.id)}>
+                  <div className="question-form-grid">
+                    <select
+                      value={draft.type}
+                      onChange={(event) => setDraft({ ...draft, type: event.target.value })}
+                    >
+                      {questionTypes.map((type) => (
+                        <option key={type}>{type}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={draft.difficulty}
+                      onChange={(event) => setDraft({ ...draft, difficulty: event.target.value })}
+                    >
+                      {difficultyOptions.map((difficulty) => (
+                        <option key={difficulty}>{difficulty}</option>
+                      ))}
+                    </select>
+                    <input
+                      value={draft.answer}
+                      onChange={(event) => setDraft({ ...draft, answer: event.target.value })}
+                      placeholder="答案"
+                    />
+                    <input
+                      value={draft.year}
+                      onChange={(event) => setDraft({ ...draft, year: event.target.value })}
+                      placeholder="年份 / 模拟 / 自编"
+                    />
+                  </div>
+                  <textarea
+                    value={draft.stem}
+                    onChange={(event) => setDraft({ ...draft, stem: event.target.value })}
+                    required
+                  />
+                  {/单选题|多选题/.test(draft.type) ? (
+                    <textarea
+                      value={draft.options}
+                      onChange={(event) => setDraft({ ...draft, options: event.target.value })}
+                    />
+                  ) : null}
+                  <textarea
+                    value={draft.analysis}
+                    onChange={(event) => setDraft({ ...draft, analysis: event.target.value })}
+                    placeholder="解析"
+                  />
+                  <div className="question-form-grid">
+                    <input
+                      value={draft.source}
+                      onChange={(event) => setDraft({ ...draft, source: event.target.value })}
+                      placeholder="来源"
+                    />
+                    <input
+                      value={draft.knowledgeTags}
+                      onChange={(event) => setDraft({ ...draft, knowledgeTags: event.target.value })}
+                      placeholder="知识标签"
+                    />
+                    <button className="primary" disabled={Boolean(busy) || !draft.stem.trim()}>
+                      保存修改
+                    </button>
+                    <button type="button" onClick={() => setEditingId(null)}>
+                      取消
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <div className="question-editor-head">
+                    <div className="question-meta">
+                      <span>{question.id}</span>
+                      <strong>{question.type || "题目"}</strong>
+                      {question.is_archived ? <em>已隐藏</em> : null}
+                      {question.answer ? <em>答案：{question.answer}</em> : <em>答案待补充</em>}
+                      {question.source ? <em>{question.source}</em> : null}
+                    </div>
+                    <div className="question-editor-actions">
+                      <button onClick={() => startEditing(question)} disabled={Boolean(busy)}>
+                        编辑
+                      </button>
+                      {question.is_archived ? (
+                        <button onClick={() => restoreTeacherQuestion(question.id)} disabled={Boolean(busy)}>
+                          恢复
+                        </button>
+                      ) : (
+                        <button className="danger-button" onClick={() => archiveTeacherQuestion(question.id)} disabled={Boolean(busy)}>
+                          隐藏
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <h4>{question.stem}</h4>
+                  {question.options ? <pre>{question.options}</pre> : null}
+                  <p>解析：{question.analysis || "暂无解析"}</p>
+                </>
+              )}
+            </article>
+          ))
+        ) : (
+          <div className="empty">当前章节还没有题目。可先导入当前章节习题，或手动新增。</div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -1050,7 +1398,7 @@ function StudentWorkspace({
 
   const questions = detail?.questions || [];
   const outline = detail?.outlines?.[0] || null;
-  const practiceQuestions = questions.slice(0, 20);
+  const practiceQuestions = questions;
 
   useEffect(() => {
     setTab(routeToStudentTab(routePath));
@@ -1896,6 +2244,22 @@ function parseQuestionOptions(options) {
     .map((match) => match[1].trim())
     .filter(Boolean);
   return matches.length > 1 ? matches : [value];
+}
+
+function parseKnowledgeTags(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function splitTags(value) {
+  return String(value || "")
+    .split(/[,，、\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function optionKey(option) {

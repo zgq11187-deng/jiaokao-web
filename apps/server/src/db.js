@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS exam_questions (
   knowledge_tags_json TEXT DEFAULT '[]',
   notion_page_id TEXT,
   notion_url TEXT,
+  is_archived INTEGER NOT NULL DEFAULT 0 CHECK(is_archived IN (0, 1)),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(chapter_id, stem, source)
 );
@@ -134,6 +135,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 migrateExamQuestionUniqueConstraint();
 migrateChapterStudentVisible();
+migrateExamQuestionArchived();
 
 function migrateChapterStudentVisible() {
   const columns = db.prepare(`PRAGMA table_info(chapters)`).all();
@@ -162,6 +164,7 @@ function migrateExamQuestionUniqueConstraint() {
       knowledge_tags_json TEXT DEFAULT '[]',
       notion_page_id TEXT,
       notion_url TEXT,
+      is_archived INTEGER NOT NULL DEFAULT 0 CHECK(is_archived IN (0, 1)),
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(chapter_id, stem, source)
     );
@@ -173,6 +176,12 @@ function migrateExamQuestionUniqueConstraint() {
     ALTER TABLE exam_questions_new RENAME TO exam_questions;
     PRAGMA foreign_keys = ON;
   `);
+}
+
+function migrateExamQuestionArchived() {
+  const columns = db.prepare(`PRAGMA table_info(exam_questions)`).all();
+  if (columns.some((column) => column.name === "is_archived")) return;
+  db.exec(`ALTER TABLE exam_questions ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0`);
 }
 
 export function all(sql, params = []) {

@@ -983,6 +983,80 @@ pre {
   align-items: center;
 }
 
+.question-manager {
+  margin-top: 18px;
+}
+
+.question-manager > .muted {
+  margin: 10px 0 14px;
+}
+
+.question-manager-toolbar,
+.question-editor-head,
+.question-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.question-manager-toolbar,
+.question-editor-head {
+  justify-content: space-between;
+}
+
+.question-editor-list {
+  margin-top: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.question-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.question-editor.archived {
+  background: #f8fafc;
+  opacity: 0.78;
+}
+
+.question-editor h4 {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.question-editor pre {
+  margin: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.question-edit-form {
+  display: grid;
+  gap: 10px;
+}
+
+.question-edit-form.compact {
+  margin: 12px 0 18px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.question-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  align-items: center;
+}
+
+.question-form-grid button {
+  min-width: 0;
+}
+
 .sub-panel-title {
   display: flex;
   align-items: center;
@@ -1027,6 +1101,7 @@ pre {
 
   .flow-grid,
   .inspector,
+  .question-form-grid,
   .student-overview,
   .student-grid,
   .learning-path,

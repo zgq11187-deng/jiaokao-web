@@ -78,7 +78,7 @@ project/
 - `chapters`：章节，包含 `student_visible` 控制是否开放给学生
 - `raw_pages`：Qwen 生成的 Markdown 原始页
 - `outline_analyses`：A 自动填充考点结果
-- `exam_questions`：B 真题入库结果
+- `exam_questions`：B 真题入库结果和 Notion 教学页导入题，包含 `is_archived` 用于老师隐藏题目；隐藏题不进入学生练习、模拟考试和导出题库，但保留历史答题记录
 - `teaching_pages`：C 教学页结果
 - `generation_logs`：生成流程日志
 
@@ -142,6 +142,12 @@ project/
 - `POST /api/chapters/:id/raw-pages/from-file`：上传文件并用 Qwen 生成原始页
 - `POST /api/chapters/:id/fill-outline`：Codex Agent A 自动填充考点
 - `POST /api/chapters/:id/import-exam-questions`：Codex Agent B 真题入库
+- `POST /api/chapters/:id/import-teaching-questions`：从当前章节最新教学页导入题库型习题，支持历年真题、模拟题、模拟训练、章节测试、习题精选、章节题库等区块，跳过课堂提问类内容；题库区没有题型小标题时，可根据编号题和 A/B/C/D 选项解析；`单选题 1【模拟题】`、`多选题 1【模拟题】`、`判断题 1【模拟题】`、`操作题 1【模拟题】` 这类标题也按对应题型导入
+- `POST /api/chapters/:id/cleanup-duplicate-questions`：老师清理当前章节 Notion AI 导入重复题
+- `POST /api/teacher/chapters/:id/questions`：老师手动新增当前章节题目
+- `PATCH /api/teacher/questions/:id`：老师编辑当前章节题目
+- `POST /api/teacher/questions/:id/archive`：老师隐藏题目，不物理删除历史答题记录
+- `POST /api/teacher/questions/:id/restore`：老师恢复已隐藏题目
 - `POST /api/chapters/:id/generate-teaching-page`：Codex Agent C 生成教学页
 - `POST /api/chapters/:id/generate-all`：串联执行 A/B/C
 - `POST /api/notion-agent/scan-triggers`：老师手动扫描 Notion 复选框触发项，并执行 A/B/C
@@ -176,7 +182,8 @@ project/
 
 - 老师先点击“同步 Notion 章节列表”，只更新本地章节列表，避免全量读取正文导致请求超时
 - 老师选中当前章节后点击“同步当前章节教学页”，后端只读取该章节 Notion 页面正文并写入 `teaching_pages`
-- 老师点击“导入当前章节习题”，后端只从当前章节最新教学页解析自编题并写入 `exam_questions`
+- 老师点击“导入当前章节习题”，后端只从当前章节最新教学页解析题库型内容并写入 `exam_questions`，包括历年真题、模拟题和自编题，排除课堂提问类互动题；解析器必须支持真题小节“单项选择题 / 多项选择题 / 判断题 / 操作应用题”和模拟题标题“单选题 1【模拟题】 / 多选题 1【模拟题】 / 判断题 1【模拟题】 / 操作题 1【模拟题】”，并按题型返回解析、新增、更新、跳过统计
+- Notion 教学页导入题的来源必须区分 `Notion AI 题库题`、`Notion AI 模拟题`、`Notion AI 自编题`；操作题允许没有选项，答案保存为“按步骤评分”，参考步骤保存到解析
 - 学生端只读取本地已开放章节、教学页和题库，不直接调用 Notion
 
 Logseq 版 Notion Agent 触发链路：
