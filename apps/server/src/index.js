@@ -46,6 +46,7 @@ import {
   createSession,
   hashPassword,
   publicUser,
+  requireLogin,
   requireAuthorized,
   requireTeacher,
   teacherCount,
@@ -146,6 +147,29 @@ app.post("/api/auth/logout", (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/api/auth/change-password", requireLogin, (req, res) => {
+  try {
+    const oldPassword = String(req.body?.oldPassword || "");
+    const newPassword = String(req.body?.newPassword || "");
+    validatePassword(newPassword);
+    const user = get(`SELECT * FROM users WHERE id = ?`, [req.user.id]);
+    if (!user || !verifyPassword(oldPassword, user.password_hash)) {
+      return res.status(400).json({ error: "旧密码不正确" });
+    }
+    run(
+      `UPDATE users
+       SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [hashPassword(newPassword), user.id],
+    );
+    run(`DELETE FROM sessions WHERE user_id = ?`, [user.id]);
+    clearSession(req, res);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.get("/api/teacher/applications", requireTeacher, (_req, res) => {
   const applications = all(
     `SELECT student_applications.*, users.authorization_status
@@ -184,6 +208,36 @@ app.post("/api/teacher/students", requireTeacher, (req, res) => {
   }
 });
 
+app.get("/api/teacher/teachers", requireTeacher, (_req, res) => {
+  const teachers = all(
+    `SELECT id, name, phone, role, authorization_status, class_note, created_at, updated_at
+     FROM users
+     WHERE role = 'teacher'
+     ORDER BY updated_at DESC, created_at DESC, id DESC`,
+  );
+  res.json({ ok: true, teachers });
+});
+
+app.post("/api/teacher/teachers", requireTeacher, (req, res) => {
+  try {
+    const { name, phone, password, classNote } = req.body || {};
+    validateNamePhonePassword({ name, phone, password });
+    const normalizedPhone = normalizePhone(phone);
+    if (get(`SELECT id FROM users WHERE phone = ?`, [normalizedPhone])) {
+      return res.status(409).json({ error: "该手机号已存在" });
+    }
+    const result = run(
+      `INSERT INTO users (name, phone, password_hash, role, authorization_status, class_note)
+       VALUES (?, ?, ?, 'teacher', 'approved', ?)`,
+      [name.trim(), normalizedPhone, hashPassword(password), classNote || ""],
+    );
+    const user = get(`SELECT * FROM users WHERE id = ?`, [result.lastInsertRowid]);
+    res.json({ ok: true, user: publicUser(user) });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.get("/api/teacher/students", requireTeacher, (_req, res) => {
   const students = all(
     `SELECT id, name, phone, role, authorization_status, class_note, created_at, updated_at
@@ -200,6 +254,23 @@ app.post("/api/teacher/students/:id/authorize", requireTeacher, (req, res) => {
 
 app.post("/api/teacher/students/:id/revoke", requireTeacher, (req, res) => {
   updateStudentAuthorization(req, res, "rejected");
+});
+
+app.post("/api/teacher/students/:id/reset-password", requireTeacher, (req, res) => {
+  resetUserPassword(req, res, {
+    role: "student",
+    notFoundMessage: "学生账号不存在",
+  });
+});
+
+app.post("/api/teacher/teachers/:id/reset-password", requireTeacher, (req, res) => {
+  if (Number(req.params.id) === Number(req.user.id)) {
+    return res.status(400).json({ error: "请使用“修改我的密码”更新当前账号密码" });
+  }
+  resetUserPassword(req, res, {
+    role: "teacher",
+    notFoundMessage: "老师账号不存在",
+  });
 });
 
 app.delete("/api/teacher/students/:id", requireTeacher, (req, res) => {
@@ -3038,16 +3109,43 @@ function updateChapterStudentVisibility(req, res, visible) {
 }
 
 function mustStudentUser(id) {
-  const student = get(`SELECT * FROM users WHERE id = ?`, [Number(id)]);
-  if (!student || student.role !== "student") {
-    throw new Error("学生账号不存在");
+  return mustUserByRole(id, "student", "学生账号不存在");
+}
+
+function mustUserByRole(id, role, notFoundMessage) {
+  const user = get(`SELECT * FROM users WHERE id = ?`, [Number(id)]);
+  if (!user || user.role !== role) {
+    throw new Error(notFoundMessage);
   }
-  return student;
+  return user;
+}
+
+function resetUserPassword(req, res, { role, notFoundMessage }) {
+  try {
+    const user = mustUserByRole(req.params.id, role, notFoundMessage);
+    const password = String(req.body?.password || "");
+    validatePassword(password);
+    run(
+      `UPDATE users
+       SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [hashPassword(password), user.id],
+    );
+    run(`DELETE FROM sessions WHERE user_id = ?`, [user.id]);
+    const updatedUser = get(`SELECT * FROM users WHERE id = ?`, [user.id]);
+    res.json({ ok: true, user: publicUser(updatedUser) });
+  } catch (error) {
+    res.status(/不存在/.test(error.message) ? 404 : 400).json({ error: error.message });
+  }
 }
 
 function validateNamePhonePassword({ name, phone, password }) {
   if (!String(name || "").trim()) throw new Error("请填写姓名");
   if (!normalizePhone(phone)) throw new Error("请填写手机号");
+  validatePassword(password);
+}
+
+function validatePassword(password) {
   if (String(password || "").length < 6) {
     throw new Error("密码至少需要 6 位");
   }

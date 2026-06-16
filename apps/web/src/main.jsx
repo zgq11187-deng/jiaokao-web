@@ -8,6 +8,7 @@ import {
   Download,
   FileText,
   Layers,
+  KeyRound,
   Loader2,
   LogOut,
   Plus,
@@ -17,6 +18,7 @@ import {
   Target,
   Upload,
   UserCheck,
+  Users,
   XCircle,
 } from "lucide-react";
 import "./styles.css";
@@ -41,6 +43,7 @@ function App() {
   const [detail, setDetail] = useState(null);
   const [applications, setApplications] = useState([]);
   const [students, setStudents] = useState([]);
+  const [teachers, setTeachers] = useState([]);
   const [studentChapterListOpen, setStudentChapterListOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [chapterNo, setChapterNo] = useState("");
@@ -77,6 +80,7 @@ function App() {
     if (isTeacher) {
       loadApplications();
       loadStudents();
+      loadTeachers();
     }
   }, [user?.id, user?.authorizationStatus]);
 
@@ -154,6 +158,8 @@ function App() {
       setSelectedId(null);
       setDetail(null);
       setApplications([]);
+      setStudents([]);
+      setTeachers([]);
       await loadMe();
     });
   }
@@ -276,6 +282,12 @@ function App() {
     setStudents(data.students || []);
   }
 
+  async function loadTeachers() {
+    if (!isTeacher) return;
+    const data = await request("/api/teacher/teachers");
+    setTeachers(data.teachers || []);
+  }
+
   async function reviewApplication(id, action) {
     await withBusy(action === "approve" ? "通过申请" : "拒绝申请", async () => {
       await request(`/api/teacher/applications/${id}/${action}`, {
@@ -294,6 +306,57 @@ function App() {
       });
       await loadApplications();
       await loadStudents();
+    });
+  }
+
+  async function createTeacherAccount(teacherForm) {
+    await withBusy("添加老师账号", async () => {
+      await request("/api/teacher/teachers", {
+        method: "POST",
+        body: JSON.stringify(teacherForm),
+      });
+      await loadTeachers();
+    });
+  }
+
+  async function changeOwnPassword(passwordForm) {
+    await withBusy("修改密码", async () => {
+      await request("/api/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify(passwordForm),
+      });
+      window.alert("密码已修改，请使用新密码重新登录。");
+      setUser(null);
+      setChapters([]);
+      setSelectedId(null);
+      setDetail(null);
+      setApplications([]);
+      setStudents([]);
+      setTeachers([]);
+      setAuthMode("login");
+      await loadMe();
+    });
+  }
+
+  async function resetStudentPassword(id, password) {
+    await withBusy("重置学生密码", async () => {
+      await request(`/api/teacher/students/${id}/reset-password`, {
+        method: "POST",
+        body: JSON.stringify({ password }),
+      });
+      await loadStudents();
+      setSyncNotice("学生密码已重置，该学生需要使用新密码重新登录。");
+    });
+  }
+
+  async function resetTeacherPassword(id, password) {
+    await withBusy("重置老师密码", async () => {
+      await request(`/api/teacher/teachers/${id}/reset-password`, {
+        method: "POST",
+        body: JSON.stringify({ password }),
+      });
+      await loadTeachers();
+      setSyncNotice("老师密码已重置，该老师需要使用新密码重新登录。");
     });
   }
 
@@ -636,8 +699,14 @@ function App() {
             exportFile={exportFile}
             applications={applications}
             students={students}
+            teachers={teachers}
+            user={user}
             reviewApplication={reviewApplication}
             createStudentAccount={createStudentAccount}
+            createTeacherAccount={createTeacherAccount}
+            changeOwnPassword={changeOwnPassword}
+            resetStudentPassword={resetStudentPassword}
+            resetTeacherPassword={resetTeacherPassword}
             updateStudentAccess={updateStudentAccess}
             deleteStudent={deleteStudent}
             updateChapterVisibility={updateChapterVisibility}
@@ -859,13 +928,25 @@ function TeacherWorkspace(props) {
     exportFile,
     applications,
     students,
+    teachers,
+    user,
     reviewApplication,
     createStudentAccount,
+    createTeacherAccount,
+    changeOwnPassword,
+    resetStudentPassword,
+    resetTeacherPassword,
     updateStudentAccess,
     deleteStudent,
     updateChapterVisibility,
   } = props;
   const [studentForm, setStudentForm] = useState(emptyAuthForm);
+  const [teacherForm, setTeacherForm] = useState(emptyAuthForm);
+  const [passwordForm, setPasswordForm] = useState({
+    oldPassword: "",
+    newPassword: "",
+    confirmPassword: "",
+  });
   const [questionManagerOpen, setQuestionManagerOpen] = useState(false);
 
   async function submitStudent(event) {
@@ -874,8 +955,156 @@ function TeacherWorkspace(props) {
     setStudentForm(emptyAuthForm);
   }
 
+  async function submitTeacher(event) {
+    event.preventDefault();
+    await createTeacherAccount(teacherForm);
+    setTeacherForm(emptyAuthForm);
+  }
+
+  async function submitPasswordChange(event) {
+    event.preventDefault();
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      window.alert("两次输入的新密码不一致。");
+      return;
+    }
+    await changeOwnPassword({
+      oldPassword: passwordForm.oldPassword,
+      newPassword: passwordForm.newPassword,
+    });
+    setPasswordForm({ oldPassword: "", newPassword: "", confirmPassword: "" });
+  }
+
+  async function promptResetPassword(label, onConfirm) {
+    const password = window.prompt(`请输入 ${label} 的新密码（至少 6 位）`);
+    if (password === null) return;
+    if (password.length < 6) {
+      window.alert("密码至少需要 6 位。");
+      return;
+    }
+    const confirmPassword = window.prompt("请再次输入新密码");
+    if (confirmPassword === null) return;
+    if (password !== confirmPassword) {
+      window.alert("两次输入的新密码不一致。");
+      return;
+    }
+    await onConfirm(password);
+    window.alert(`${label} 的密码已重置，请通知该用户使用新密码重新登录。`);
+  }
+
   return (
     <>
+      <section className="panel auth-review">
+        <div className="panel-title">
+          <KeyRound size={16} />
+          <h3>修改我的密码</h3>
+        </div>
+        <form className="inline-form password-form" onSubmit={submitPasswordChange}>
+          <input
+            value={passwordForm.oldPassword}
+            onChange={(event) =>
+              setPasswordForm({ ...passwordForm, oldPassword: event.target.value })
+            }
+            placeholder="旧密码"
+            type="password"
+            autoComplete="current-password"
+          />
+          <input
+            value={passwordForm.newPassword}
+            onChange={(event) =>
+              setPasswordForm({ ...passwordForm, newPassword: event.target.value })
+            }
+            placeholder="新密码（至少 6 位）"
+            type="password"
+            autoComplete="new-password"
+          />
+          <input
+            value={passwordForm.confirmPassword}
+            onChange={(event) =>
+              setPasswordForm({ ...passwordForm, confirmPassword: event.target.value })
+            }
+            placeholder="确认新密码"
+            type="password"
+            autoComplete="new-password"
+          />
+          <button disabled={Boolean(busy)}>
+            <KeyRound size={16} /> 修改密码
+          </button>
+        </form>
+      </section>
+
+      <section className="panel auth-review">
+        <div className="panel-title">
+          <Users size={16} />
+          <h3>老师账号</h3>
+          <span>{teachers.length}</span>
+        </div>
+        <form className="inline-form" onSubmit={submitTeacher}>
+          <input
+            value={teacherForm.name}
+            onChange={(event) =>
+              setTeacherForm({ ...teacherForm, name: event.target.value })
+            }
+            placeholder="老师姓名"
+          />
+          <input
+            value={teacherForm.phone}
+            onChange={(event) =>
+              setTeacherForm({ ...teacherForm, phone: event.target.value })
+            }
+            placeholder="手机号"
+          />
+          <input
+            value={teacherForm.password}
+            onChange={(event) =>
+              setTeacherForm({ ...teacherForm, password: event.target.value })
+            }
+            placeholder="初始密码"
+            type="password"
+          />
+          <input
+            value={teacherForm.classNote}
+            onChange={(event) =>
+              setTeacherForm({ ...teacherForm, classNote: event.target.value })
+            }
+            placeholder="备注，例如：任课老师"
+          />
+          <button disabled={Boolean(busy)}>
+            <Plus size={16} /> 添加老师账号
+          </button>
+        </form>
+        <div className="student-account-list">
+          {teachers.length ? (
+            teachers.map((teacher) => (
+              <article key={teacher.id}>
+                <div>
+                  <strong>{teacher.name}</strong>
+                  <p>{teacher.phone} · {teacher.class_note || "未填写备注"}</p>
+                  <p>权限：老师</p>
+                </div>
+                <div className="row">
+                  {teacher.id === user?.id ? (
+                    <span className="pill">当前账号</span>
+                  ) : (
+                    <button
+                      onClick={() =>
+                        promptResetPassword(`${teacher.name}（老师）`, (password) =>
+                          resetTeacherPassword(teacher.id, password),
+                        )
+                      }
+                      disabled={Boolean(busy)}
+                    >
+                      重置密码
+                    </button>
+                  )}
+                </div>
+              </article>
+            ))
+          ) : (
+            <p className="muted">暂无老师账号。</p>
+          )}
+        </div>
+      </section>
+
       <section className="panel auth-review">
         <div className="panel-title">
           <UserCheck size={16} />
@@ -968,6 +1197,16 @@ function TeacherWorkspace(props) {
                       收回权限
                     </button>
                   )}
+                  <button
+                    onClick={() =>
+                      promptResetPassword(`${student.name}（学生）`, (password) =>
+                        resetStudentPassword(student.id, password),
+                      )
+                    }
+                    disabled={Boolean(busy)}
+                  >
+                    重置密码
+                  </button>
                   <button
                     className="danger-button"
                     onClick={() => deleteStudent(student.id)}

@@ -126,6 +126,7 @@ project/
 - Session token 使用 httpOnly cookie 或服务端可撤销 token
 - 所有受保护 API 必须校验登录状态和授权状态
 - 老师端 API 必须校验 `teacher` 角色
+- 用户修改或被重置密码后，服务端删除该用户所有现有 session，要求重新登录
 
 ## 6. API 边界
 
@@ -155,11 +156,16 @@ project/
 - `POST /api/auth/register`：学生注册申请
 - `POST /api/auth/login`：登录
 - `POST /api/auth/logout`：退出
+- `POST /api/auth/change-password`：当前登录用户修改自己的密码，需校验旧密码
 - `GET /api/auth/me`：当前用户
 - `GET /api/teacher/applications`：老师查看申请
 - `POST /api/teacher/applications/:id/approve`：通过申请
 - `POST /api/teacher/applications/:id/reject`：拒绝申请
 - `POST /api/teacher/students`：老师预录入学生账号
+- `POST /api/teacher/students/:id/reset-password`：老师重置学生密码，并清除该学生现有 session
+- `GET /api/teacher/teachers`：老师查看老师账号列表
+- `POST /api/teacher/teachers`：老师添加其他老师，新老师拥有同等教师权限
+- `POST /api/teacher/teachers/:id/reset-password`：老师重置其他老师密码，并清除被重置老师现有 session；不提供删除老师账号
 
 ## 7. Notion / Qwen / Codex Agent 流程
 
