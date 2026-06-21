@@ -1477,7 +1477,10 @@ function getExcludedTeachingQuestionSectionMarkers() {
 
 function parseTeachingQuestions(markdown, chapter, warnings = []) {
   const normalized = normalizeTeachingQuestionMarkdown(markdown);
-  const scoped = scopeTeachingQuestionMarkdown(normalized);
+  const explicitTrueQuestionBlocks = extractExplicitTrueQuestionBlocks(normalized, warnings);
+  const scoped = [explicitTrueQuestionBlocks, scopeTeachingQuestionMarkdown(normalized)]
+    .filter((part) => part && part.trim())
+    .join("\n\n");
   const expectedCount = parseExpectedQuestionCount(scoped) || parseExpectedQuestionCount(normalized);
   const lines = filterTeachingQuestionImportLines(scoped.split(/\r?\n/));
   const questions = [];
@@ -1635,6 +1638,48 @@ function scopeTeachingQuestionMarkdown(markdown) {
   return fallback >= 0 ? markdown.slice(fallback) : markdown;
 }
 
+function extractExplicitTrueQuestionBlocks(markdown, warnings = []) {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const blocks = [];
+  let current = null;
+  for (const line of lines) {
+    if (isTrueQuestionBlockStart(line)) {
+      if (current?.length) {
+        blocks.push(current);
+        warnings.push("检测到新的“历年真题演练开始”，上一段未遇到结束标记，已按边界前内容导入");
+      }
+      current = ["历年真题"];
+      continue;
+    }
+    if (isTrueQuestionBlockEnd(line)) {
+      if (current) {
+        blocks.push(current);
+        current = null;
+      }
+      continue;
+    }
+    if (current) current.push(line);
+  }
+  if (current?.length) {
+    blocks.push(current);
+    warnings.push("检测到“历年真题演练开始”但没有找到“历年真题演练结束”，已从开始标记解析到文末");
+  }
+  return blocks
+    .map((block) => block.join("\n").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function isTrueQuestionBlockStart(line) {
+  const normalized = normalizeTeachingSectionLine(line);
+  return normalized.includes("历年真题演练开始") || normalized.includes("真题演练开始");
+}
+
+function isTrueQuestionBlockEnd(line) {
+  const normalized = normalizeTeachingSectionLine(line);
+  return normalized.includes("历年真题演练结束") || normalized.includes("真题演练结束");
+}
+
 function parseExpectedQuestionCount(markdown) {
   const match = /共\s*(\d+)\s*道题/.exec(markdown);
   return match ? Number(match[1]) : null;
@@ -1716,7 +1761,12 @@ function parseTypedQuestionStart(line) {
     .replace(/[*_`]/g, "")
     .replace(/\s+/g, " ");
   const match = /^(操作题|操作应用题|简答题|单选题|单项选择题|多选题|多项选择题|判断题)\s*(\d{1,3})\s*(?:[【\[]([^】\]]+)[】\]])?\s*(.*)$/.exec(cleaned);
-  if (!match) return null;
+  if (!match) {
+    const colonMatch = /^(操作题|操作应用题|简答题|单选题|单项选择题|多选题|多项选择题|判断题)\s*[：:]\s*(.+)$/.exec(cleaned);
+    if (!colonMatch) return null;
+    const type = normalizeQuestionTypeLabel(colonMatch[1]);
+    return ["", "", `${type}：${colonMatch[2].trim()}`.trim()];
+  }
   const type = normalizeQuestionTypeLabel(match[1]);
   const number = match[2];
   const rest = match[4]?.trim() || "";
