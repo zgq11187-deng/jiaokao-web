@@ -144,11 +144,59 @@ textarea {
 }
 
 .chapter-list button {
-  display: grid;
+  display: flex;
+  align-items: center;
   justify-content: stretch;
   text-align: left;
-  gap: 6px;
+  gap: 12px;
   padding: 12px;
+}
+
+.chapter-list button > div {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+}
+
+.chapter-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: #e2e8f0;
+  color: #475569;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.chapter-index:hover {
+  background: #cbd5e1;
+}
+
+.chapter-list button.active .chapter-index {
+  background: #fed7aa;
+  color: #c2410c;
+}
+
+.chapter-order-edit {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.chapter-order-edit input {
+  width: 36px;
+  height: 28px;
+  padding: 4px 6px;
+  font-size: 13px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  text-align: center;
 }
 
 .chapter-list button.active {

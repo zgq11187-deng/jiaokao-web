@@ -45,6 +45,10 @@ function App() {
   const [students, setStudents] = useState([]);
   const [teachers, setTeachers] = useState([]);
   const [studentChapterListOpen, setStudentChapterListOpen] = useState(false);
+  const [teacherChapterListOpen, setTeacherChapterListOpen] = useState(true);
+  const [chapterSortMode, setChapterSortMode] = useState("number");
+  const [chapterSearchIndex, setChapterSearchIndex] = useState("");
+  const [editingChapterOrder, setEditingChapterOrder] = useState(null);
   const [title, setTitle] = useState("");
   const [chapterNo, setChapterNo] = useState("");
   const [sectionNo, setSectionNo] = useState("");
@@ -61,6 +65,44 @@ function App() {
   const latestTeaching = detail?.teachingPages?.[0] || null;
   const isTeacher = user?.role === "teacher";
   const isAuthorized = isTeacher || user?.authorizationStatus === "approved";
+  const sortedChapters = useMemo(() => {
+    if (!isTeacher) return chapters;
+    const sorted = [...chapters];
+
+    switch (chapterSortMode) {
+      case "number":
+        return sorted.sort((a, b) => {
+          const aChapter = parseInt(a.chapter_no || "0") || 0;
+          const bChapter = parseInt(b.chapter_no || "0") || 0;
+          if (aChapter !== bChapter) return aChapter - bChapter;
+          const aSection = parseInt(a.section_no || "0") || 0;
+          const bSection = parseInt(b.section_no || "0") || 0;
+          return aSection - bSection;
+        });
+      case "name-asc":
+        return sorted.sort((a, b) => a.title.localeCompare(b.title, "zh-CN"));
+      case "name-desc":
+        return sorted.sort((a, b) => b.title.localeCompare(a.title, "zh-CN"));
+      case "time-asc":
+        return sorted.sort((a, b) => a.id - b.id);
+      case "time-desc":
+        return sorted.sort((a, b) => b.id - a.id);
+      default:
+        return sorted;
+    }
+  }, [chapters, isTeacher, chapterSortMode]);
+
+  const filteredChapters = useMemo(() => {
+    if (!isTeacher || !chapterSearchIndex.trim()) return sortedChapters;
+    const searchText = chapterSearchIndex.trim().toLowerCase();
+    return sortedChapters.filter((chapter) => {
+      const title = (chapter.title || "").toLowerCase();
+      const chapterNo = chapter.chapter_no || "";
+      const sectionNo = chapter.section_no || "";
+      const chapterInfo = `第${chapterNo}章第${sectionNo}节`.toLowerCase();
+      return title.includes(searchText) || chapterInfo.includes(searchText);
+    });
+  }, [sortedChapters, chapterSearchIndex, isTeacher]);
   const workspaceTitle = isTeacher
     ? selected?.title || "请选择或新建章节"
     : studentPageTitle(routePath, selected);
@@ -389,6 +431,17 @@ function App() {
     });
   }
 
+  async function updateChapterOrder(chapterId, chapterNo, sectionNo) {
+    await withBusy("更新章节序号", async () => {
+      await request(`/api/teacher/chapters/${chapterId}/order`, {
+        method: "PATCH",
+        body: JSON.stringify({ chapterNo, sectionNo }),
+      });
+      await loadChapters();
+      setEditingChapterOrder(null);
+    });
+  }
+
   async function loadDetail(id = selectedId) {
     if (!id) return;
     const data = await request(`/api/chapters/${id}`);
@@ -615,6 +668,48 @@ function App() {
         <div className="list-head">
           <span>章节</span>
           <div className="chapter-actions">
+            {isTeacher && sortedChapters.length > 1 ? (
+              <input
+                type="text"
+                value={chapterSearchIndex}
+                onChange={(e) => setChapterSearchIndex(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setChapterSearchIndex("");
+                  }
+                }}
+                placeholder="搜索章节标题或章节号"
+                style={{
+                  width: "160px",
+                  minHeight: "36px",
+                  padding: "0 8px",
+                  fontSize: "13px",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "8px"
+                }}
+              />
+            ) : null}
+            {isTeacher && sortedChapters.length > 1 ? (
+              <select
+                value={chapterSortMode}
+                onChange={(e) => setChapterSortMode(e.target.value)}
+                style={{ minHeight: "36px", padding: "0 8px", fontSize: "13px" }}
+              >
+                <option value="number">按章节号</option>
+                <option value="name-asc">按名称升序</option>
+                <option value="name-desc">按名称降序</option>
+                <option value="time-asc">按时间升序</option>
+                <option value="time-desc">按时间降序</option>
+              </select>
+            ) : null}
+            {isTeacher && sortedChapters.length > 1 ? (
+              <button
+                onClick={() => setTeacherChapterListOpen((open) => !open)}
+                title={teacherChapterListOpen ? "收起章节" : "展开章节"}
+              >
+                {teacherChapterListOpen ? "收起" : "切换"}
+              </button>
+            ) : null}
             {!isTeacher && chapters.length > 1 ? (
               <button
                 onClick={() => setStudentChapterListOpen((open) => !open)}
@@ -636,25 +731,86 @@ function App() {
         </div>
         <nav className="chapter-list">
           {(isTeacher
-            ? chapters
+            ? teacherChapterListOpen
+              ? filteredChapters
+              : selected
+                ? [selected]
+                : filteredChapters.slice(0, 1)
             : studentChapterListOpen
               ? chapters
               : selected
                 ? [selected]
                 : chapters.slice(0, 1)
-          ).map((chapter) => (
-            <button
-              key={chapter.id}
-              className={chapter.id === selectedId ? "active" : ""}
-              onClick={() => selectChapter(chapter.id)}
-            >
-              <strong>{chapter.title}</strong>
-              <span>
-                {chapter.status || "待生成"}
-                {isTeacher ? ` · ${chapter.student_visible ? "学生可见" : "学生隐藏"}` : ""}
-              </span>
-            </button>
-          ))}
+          ).map((chapter) => {
+            const displayIndex = isTeacher
+              ? sortedChapters.findIndex(ch => ch.id === chapter.id) + 1
+              : 0;
+            const isEditing = editingChapterOrder === chapter.id;
+            return (
+              <button
+                key={chapter.id}
+                className={chapter.id === selectedId ? "active" : ""}
+                onClick={() => !isEditing && selectChapter(chapter.id)}
+              >
+                {isTeacher ? (
+                  isEditing ? (
+                    <div className="chapter-order-edit">
+                      <input
+                        type="text"
+                        placeholder="章"
+                        defaultValue={chapter.chapter_no || ""}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            const chapterNo = e.target.value;
+                            const sectionNo = e.target.nextSibling.value;
+                            updateChapterOrder(chapter.id, chapterNo, sectionNo);
+                          }
+                          if (e.key === "Escape") {
+                            setEditingChapterOrder(null);
+                          }
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                      <input
+                        type="text"
+                        placeholder="节"
+                        defaultValue={chapter.section_no || ""}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            const chapterNo = e.target.previousSibling.value;
+                            const sectionNo = e.target.value;
+                            updateChapterOrder(chapter.id, chapterNo, sectionNo);
+                          }
+                          if (e.key === "Escape") {
+                            setEditingChapterOrder(null);
+                          }
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                  ) : (
+                    <span
+                      className="chapter-index"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingChapterOrder(chapter.id);
+                      }}
+                      title="点击编辑章节号"
+                    >
+                      {displayIndex}
+                    </span>
+                  )
+                ) : null}
+                <div>
+                  <strong>{chapter.title}</strong>
+                  <span>
+                    {chapter.status || "待生成"}
+                    {isTeacher ? ` · ${chapter.student_visible ? "学生可见" : "学生隐藏"}` : ""}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
           {!chapters.length ? (
             <p className="muted">{isTeacher ? "暂无章节。" : "暂无开放章节，请等待老师发布。"}</p>
           ) : null}
@@ -948,6 +1104,8 @@ function TeacherWorkspace(props) {
     confirmPassword: "",
   });
   const [questionManagerOpen, setQuestionManagerOpen] = useState(false);
+  const [teacherListOpen, setTeacherListOpen] = useState(false);
+  const [studentAuthOpen, setStudentAuthOpen] = useState(false);
 
   async function submitStudent(event) {
     event.preventDefault();
@@ -1037,6 +1195,11 @@ function TeacherWorkspace(props) {
           <Users size={16} />
           <h3>老师账号</h3>
           <span>{teachers.length}</span>
+          {teachers.length > 0 ? (
+            <button onClick={() => setTeacherListOpen((open) => !open)}>
+              {teacherListOpen ? "收起" : "切换"}
+            </button>
+          ) : null}
         </div>
         <form className="inline-form" onSubmit={submitTeacher}>
           <input
@@ -1074,7 +1237,7 @@ function TeacherWorkspace(props) {
         </form>
         <div className="student-account-list">
           {teachers.length ? (
-            teachers.map((teacher) => (
+            (teacherListOpen ? teachers : teachers.slice(0, 1)).map((teacher) => (
               <article key={teacher.id}>
                 <div>
                   <strong>{teacher.name}</strong>
@@ -1110,6 +1273,11 @@ function TeacherWorkspace(props) {
           <UserCheck size={16} />
           <h3>学生授权</h3>
           <span>{applications.filter((item) => item.status === "pending").length}</span>
+          {(applications.length > 0 || students.length > 0) ? (
+            <button onClick={() => setStudentAuthOpen((open) => !open)}>
+              {studentAuthOpen ? "收起" : "切换"}
+            </button>
+          ) : null}
         </div>
         <form className="inline-form" onSubmit={submitStudent}>
           <input
@@ -1147,7 +1315,7 @@ function TeacherWorkspace(props) {
         </form>
         <div className="application-list">
           {applications.length ? (
-            applications.map((item) => (
+            (studentAuthOpen ? applications : applications.slice(0, 1)).map((item) => (
               <article key={item.id}>
                 <strong>{item.name}</strong>
                 <p>{item.phone} · {item.class_note}</p>
@@ -1174,7 +1342,7 @@ function TeacherWorkspace(props) {
             <span>{students.length}</span>
           </div>
           {students.length ? (
-            students.map((student) => (
+            (studentAuthOpen ? students : students.slice(0, 1)).map((student) => (
               <article key={student.id}>
                 <div>
                   <strong>{student.name}</strong>
@@ -1334,7 +1502,7 @@ function formatTeachingQuestionImportNotice(data = {}) {
     .map((item) => `${item.label} ${item.parsed || 0} 题 / 新增 ${item.imported || 0} / 更新 ${item.updated || 0}`)
     .join("；");
   const warningText = data.warnings?.length ? `；提示：${data.warnings.join("；")}` : "";
-  return `当前章节习题导入完成：解析 ${data.parsed || 0}，新增 ${data.imported || 0}，更新 ${data.updated || 0}，跳过 ${data.skipped || 0}${details ? `。${details}` : ""}${warningText}`;
+  return `当前章节习题导入完成：本次只导入“历年真题演练开始/结束”和“模拟题开始/结束”边界内题目。解析 ${data.parsed || 0}，新增 ${data.imported || 0}，更新 ${data.updated || 0}，跳过 ${data.skipped || 0}${details ? `。${details}` : ""}${warningText}`;
 }
 
 function emptyQuestionDraft(chapterTitle = "") {
