@@ -114,8 +114,9 @@ textarea {
 
 .list-head {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   font-weight: 800;
 }
 
@@ -123,6 +124,16 @@ textarea {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.chapter-actions > * {
+  min-width: 0;
+}
+
+.chapter-actions input[type="text"] {
+  flex: 1 1 140px;
+  min-width: 0;
 }
 
 .chapter-actions button {
@@ -453,6 +464,73 @@ textarea {
   color: #64748b;
   font-size: 13px;
   font-weight: 800;
+}
+
+.chapter-access-panel {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid #dbe4ee;
+  border-radius: 8px;
+  background: #ffffff;
+  display: grid;
+  gap: 12px;
+}
+
+.chapter-access-panel header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chapter-access-panel header strong {
+  font-size: 14px;
+}
+
+.chapter-access-panel header span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.chapter-access-panel input[type="search"] {
+  padding: 8px 10px;
+  border: 1px solid #dbe4ee;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.chapter-access-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.chapter-access-list li {
+  border: 1px solid #eef1f5;
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: #f8fafc;
+}
+
+.chapter-access-list label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.chapter-access-list label > span {
+  display: grid;
+  gap: 2px;
+}
+
+.chapter-access-list label > span > .muted {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .student-info .panel-body {

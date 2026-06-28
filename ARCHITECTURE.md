@@ -75,7 +75,8 @@ project/
 
 现有核心表：
 
-- `chapters`：章节，包含 `student_visible` 控制是否开放给学生
+- `chapters`：章节，包含 `student_visible` 控制是否对所有学生开放
+- `chapter_student_access`：章节到学生的指定授权关系（PK = chapter_id + student_id），用于在未对所有学生开放时按学生粒度授权
 - `raw_pages`：Qwen 生成的 Markdown 原始页
 - `outline_analyses`：A 自动填充考点结果
 - `exam_questions`：B 真题入库结果和 Notion 教学页导入题，包含 `is_archived` 用于老师隐藏题目；隐藏题不进入学生练习、模拟考试和导出题库，但保留历史答题记录
@@ -134,16 +135,19 @@ project/
 
 主要 API 分组：
 
-- `GET /api/chapters`：章节列表；老师返回全部本地章节，学生只返回 `student_visible = 1` 的开放章节
+- `GET /api/chapters`：章节列表；老师返回全部本地章节，学生只返回对自己可见的章节（`student_visible = 1` 或在 `chapter_student_access` 中有授权）
 - `GET /api/chapters/:id`：章节详情
-- `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；只同步章节元数据，Notion 已删除章节先对学生隐藏，不读取页面正文，不导入习题
+- `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；只同步章节元数据，Notion 已删除章节先对所有学生隐藏（保留 per-student 授权），不读取页面正文，不导入习题
 - `POST /api/teacher/chapters/:id/sync-teaching-page-from-notion`：老师手动同步当前章节 Notion 页面正文到本地教学页缓存
-- `POST /api/teacher/chapters/:id/show-to-students`：老师将章节开放给学生
-- `POST /api/teacher/chapters/:id/hide-from-students`：老师将章节对学生隐藏
+- `POST /api/teacher/chapters/:id/show-to-students`：老师将章节开放给所有学生
+- `POST /api/teacher/chapters/:id/hide-from-students`：老师关闭对所有学生的开放（不影响指定学生授权）
+- `GET /api/teacher/chapters/:id/student-access`：老师查看当前章节的指定学生授权列表，只列已批准学生
+- `POST /api/teacher/chapters/:id/student-access/:studentId/grant`：老师给指定学生单独开放当前章节
+- `POST /api/teacher/chapters/:id/student-access/:studentId/revoke`：老师取消指定学生对当前章节的访问权限
 - `POST /api/chapters/:id/raw-pages/from-file`：上传文件并用 Qwen 生成原始页
 - `POST /api/chapters/:id/fill-outline`：Codex Agent A 自动填充考点
 - `POST /api/chapters/:id/import-exam-questions`：Codex Agent B 真题入库
-- `POST /api/chapters/:id/import-teaching-questions`：从当前章节最新教学页导入题库型习题，支持历年真题、模拟题、模拟训练、章节测试、习题精选、章节题库等区块，跳过课堂提问类内容；`历年真题演练开始` 到 `历年真题演练结束` 之间的内容强制视为历年真题导入范围，兼容标题、emoji、加粗和空格变体；题库区没有题型小标题时，可根据编号题和 A/B/C/D 选项解析；`单选题：...`、`多选题：...`、`判断题：...`、`操作题：...` 这类无编号题，以及 `单选题 1【模拟题】`、`多选题 1【模拟题】`、`判断题 1【模拟题】`、`操作题 1【模拟题】` 这类标题也按对应题型导入
+- `POST /api/chapters/:id/import-teaching-questions`：从当前章节最新教学页中只导入显式双边界内题目：`历年真题演练开始` 到 `历年真题演练结束` 作为历年真题来源，`模拟题开始` 到 `模拟题结束` 作为模拟题来源；边界外内容一律不解析、不导入，不再回退全文扫描；边界标记兼容 Markdown 标题、emoji、加粗和空格变体；没有任何开始标记时返回 0 题并提示老师补充边界；只有开始没有结束时从开始标记解析到文末并返回 warning；边界内支持 `单选题：...`、`单选题（2017）：...`、`单选题（2023补充）：...`、`多选题：...`、`多选题（2023）：...`、`判断题：...`、`判断题（2017）：...`、`单选题（模拟题）：...`、`多选题（模拟题）：...`、`判断题（模拟题）：...`、`操作题（模拟题）：...` 等题型前缀，解析时去掉题型和年份 / 补充说明前缀，年份或补充信息写入 `year`
 - `POST /api/chapters/:id/cleanup-duplicate-questions`：老师清理当前章节 Notion AI 导入重复题
 - `POST /api/teacher/chapters/:id/questions`：老师手动新增当前章节题目
 - `PATCH /api/teacher/questions/:id`：老师编辑当前章节题目
@@ -188,8 +192,8 @@ project/
 
 - 老师先点击“同步 Notion 章节列表”，只更新本地章节列表，避免全量读取正文导致请求超时
 - 老师选中当前章节后点击“同步当前章节教学页”，后端只读取该章节 Notion 页面正文并写入 `teaching_pages`
-- 老师点击“导入当前章节习题”，后端只从当前章节最新教学页解析题库型内容并写入 `exam_questions`，包括历年真题、模拟题和自编题，排除课堂提问类互动题；解析器必须优先支持 `历年真题演练开始` / `历年真题演练结束` 成对边界，边界之间全部按历年真题处理；同时支持真题小节“单项选择题 / 多项选择题 / 判断题 / 操作应用题”、无编号题型前缀“单选题：...”和模拟题标题“单选题 1【模拟题】 / 多选题 1【模拟题】 / 判断题 1【模拟题】 / 操作题 1【模拟题】”，并按题型返回解析、新增、更新、跳过统计
-- Notion 教学页导入题的来源必须区分 `Notion AI 题库题`、`Notion AI 模拟题`、`Notion AI 自编题`；操作题允许没有选项，答案保存为“按步骤评分”，参考步骤保存到解析
+- 老师点击“导入当前章节习题”，后端只读取当前章节最新教学页中的双边界内容并写入 `exam_questions`：`历年真题演练开始` / `历年真题演练结束` 内按历年真题类来源处理，`模拟题开始` / `模拟题结束` 内按模拟题类来源处理；边界外的课堂提问、讲解示例、自编题和说明文字暂不进入网页题库；接口按题型返回解析、新增、更新、跳过统计
+- 当前阶段 Notion 教学页导入题按边界区分历年真题和模拟题来源；操作题允许没有选项，答案保存为“按步骤评分”，参考步骤保存到解析
 - 学生端只读取本地已开放章节、教学页和题库，不直接调用 Notion
 
 Logseq 版 Notion Agent 触发链路：

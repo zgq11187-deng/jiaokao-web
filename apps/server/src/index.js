@@ -312,6 +312,34 @@ app.post("/api/teacher/chapters/:id/hide-from-students", requireTeacher, (req, r
   updateChapterStudentVisibility(req, res, 0);
 });
 
+app.get("/api/teacher/chapters/:id/student-access", requireTeacher, (req, res) => {
+  try {
+    const chapter = mustChapter(req.params.id);
+    const students = all(
+      `SELECT users.id, users.name, users.phone, users.class_note,
+              csa.created_at AS granted_at,
+              CASE WHEN csa.student_id IS NULL THEN 0 ELSE 1 END AS has_access
+       FROM users
+       LEFT JOIN chapter_student_access csa
+         ON csa.student_id = users.id AND csa.chapter_id = ?
+       WHERE users.role = 'student' AND users.authorization_status = 'approved'
+       ORDER BY has_access DESC, users.updated_at DESC, users.id DESC`,
+      [chapter.id],
+    );
+    res.json({ ok: true, chapterId: chapter.id, students });
+  } catch (error) {
+    res.status(/不存在/.test(error.message) ? 404 : 400).json({ error: error.message });
+  }
+});
+
+app.post("/api/teacher/chapters/:id/student-access/:studentId/grant", requireTeacher, (req, res) => {
+  updateChapterStudentAccess(req, res, "grant");
+});
+
+app.post("/api/teacher/chapters/:id/student-access/:studentId/revoke", requireTeacher, (req, res) => {
+  updateChapterStudentAccess(req, res, "revoke");
+});
+
 app.patch("/api/teacher/chapters/:id/order", requireTeacher, (req, res) => {
   const { id } = req.params;
   const { chapterNo, sectionNo } = req.body || {};
@@ -376,27 +404,28 @@ app.get("/api/chapters/:id", requireAuthorized, (req, res) => {
 });
 
 app.get("/api/student/summary", requireAuthorized, (req, res) => {
-  const visibleOnly = req.user.role === "teacher" ? "" : " AND chapters.student_visible = 1";
+  const visibility = chapterVisibleSql(req.user);
+  const visibleOnly = visibility.sql === "1=1" ? "" : ` AND ${visibility.sql}`;
   const totalAttempts = get(
     `SELECT COUNT(*) AS count
      FROM question_attempts
      JOIN chapters ON chapters.id = question_attempts.chapter_id
      WHERE question_attempts.user_id = ?${visibleOnly}`,
-    [req.user.id],
+    [req.user.id, ...visibility.params],
   )?.count || 0;
   const wrongAttempts = get(
     `SELECT COUNT(*) AS count
      FROM question_attempts
      JOIN chapters ON chapters.id = question_attempts.chapter_id
      WHERE question_attempts.user_id = ? AND is_correct = 0${visibleOnly}`,
-    [req.user.id],
+    [req.user.id, ...visibility.params],
   )?.count || 0;
   const practicedChapters = get(
     `SELECT COUNT(DISTINCT question_attempts.chapter_id) AS count
      FROM question_attempts
      JOIN chapters ON chapters.id = question_attempts.chapter_id
      WHERE question_attempts.user_id = ?${visibleOnly}`,
-    [req.user.id],
+    [req.user.id, ...visibility.params],
   )?.count || 0;
   const latestAttempts = all(
     `SELECT question_attempts.*, exam_questions.stem, exam_questions.type, chapters.title AS chapter_title
@@ -406,7 +435,7 @@ app.get("/api/student/summary", requireAuthorized, (req, res) => {
      WHERE question_attempts.user_id = ?${visibleOnly}
      ORDER BY question_attempts.created_at DESC, question_attempts.id DESC
      LIMIT 8`,
-    [req.user.id],
+    [req.user.id, ...visibility.params],
   );
   res.json({
     ok: true,
@@ -459,6 +488,7 @@ app.get("/api/student/wrong-questions", requireAuthorized, (req, res) => {
   const params = [req.user.id];
   const chapterFilter = chapterId ? "AND question_attempts.chapter_id = ?" : "";
   if (chapterId) params.push(chapterId);
+  const visibility = chapterVisibleSql(req.user);
   const wrongQuestions = all(
     `SELECT
        exam_questions.*,
@@ -475,10 +505,10 @@ app.get("/api/student/wrong-questions", requireAuthorized, (req, res) => {
      JOIN question_attempts ON question_attempts.id = latest.latest_attempt_id
      JOIN exam_questions ON exam_questions.id = latest.question_id
      JOIN chapters ON chapters.id = exam_questions.chapter_id
-     WHERE (? = 'teacher' OR chapters.student_visible = 1)
+     WHERE ${visibility.sql}
      ORDER BY latest.latest_attempt_id DESC
      LIMIT 80`,
-    [...params, req.user.role],
+    [...params, ...visibility.params],
   );
   res.json({ ok: true, wrongQuestions });
 });
@@ -492,11 +522,15 @@ app.get("/api/mock-exam/questions", requireAuthorized, (req, res) => {
   const params = [];
   const filters = [];
   if (chapterId) filters.push("exam_questions.chapter_id = ?");
-  if (req.user.role !== "teacher") filters.push("chapters.student_visible = 1");
+  if (chapterId) params.push(chapterId);
+  const visibility = chapterVisibleSql(req.user);
+  if (visibility.sql !== "1=1") {
+    filters.push(visibility.sql);
+    params.push(...visibility.params);
+  }
   filters.push("COALESCE(exam_questions.is_archived, 0) = 0");
   filters.push(`(exam_questions.source IS NULL OR exam_questions.source NOT LIKE '%（重复保留）%')`);
   const chapterFilter = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
-  if (chapterId) params.push(chapterId);
   params.push(limit);
   const questions = all(
     `SELECT exam_questions.*, chapters.title AS chapter_title
@@ -3009,17 +3043,43 @@ function summarizeTeachingMarkdown(markdown) {
 
 function listChaptersForUser(user) {
   if (user?.role === "teacher") {
-    return all(`SELECT * FROM chapters ORDER BY updated_at DESC, id DESC`);
+    return all(
+      `SELECT chapters.*,
+              (SELECT COUNT(*) FROM chapter_student_access
+               WHERE chapter_student_access.chapter_id = chapters.id) AS student_access_count
+       FROM chapters
+       ORDER BY updated_at DESC, id DESC`,
+    );
   }
+  const { sql, params } = chapterVisibleSql(user);
   return all(
-    `SELECT * FROM chapters
-     WHERE student_visible = 1
+    `SELECT chapters.* FROM chapters
+     WHERE ${sql}
      ORDER BY updated_at DESC, id DESC`,
+    params,
   );
 }
 
+function chapterVisibleSql(user) {
+  if (user?.role === "teacher") return { sql: "1=1", params: [] };
+  return {
+    sql: `(chapters.student_visible = 1 OR EXISTS (
+            SELECT 1 FROM chapter_student_access csa
+            WHERE csa.chapter_id = chapters.id AND csa.student_id = ?))`,
+    params: [user.id],
+  };
+}
+
 function canAccessChapter(user, chapter) {
-  return user?.role === "teacher" || Number(chapter?.student_visible) === 1;
+  if (user?.role === "teacher") return true;
+  if (!chapter) return false;
+  if (Number(chapter.student_visible) === 1) return true;
+  const grant = get(
+    `SELECT 1 FROM chapter_student_access
+     WHERE chapter_id = ? AND student_id = ?`,
+    [chapter.id, user.id],
+  );
+  return Boolean(grant);
 }
 
 function ensureCanAccessChapter(user, chapterId) {
@@ -3261,6 +3321,46 @@ function updateChapterStudentVisibility(req, res, visible) {
     res.json({
       ok: true,
       chapter: get(`SELECT * FROM chapters WHERE id = ?`, [chapter.id]),
+    });
+  } catch (error) {
+    res.status(/不存在/.test(error.message) ? 404 : 400).json({ error: error.message });
+  }
+}
+
+function updateChapterStudentAccess(req, res, action) {
+  try {
+    const chapter = mustChapter(req.params.id);
+    const student = mustStudentUser(req.params.studentId);
+    if (action === "grant") {
+      if (student.authorization_status !== "approved") {
+        throw new Error("该学生账号尚未获得授权，无法单独开放章节");
+      }
+      run(
+        `INSERT OR IGNORE INTO chapter_student_access (chapter_id, student_id, granted_by)
+         VALUES (?, ?, ?)`,
+        [chapter.id, student.id, req.user.id],
+      );
+    } else {
+      run(
+        `DELETE FROM chapter_student_access
+         WHERE chapter_id = ? AND student_id = ?`,
+        [chapter.id, student.id],
+      );
+    }
+    run(
+      `UPDATE chapters SET updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [chapter.id],
+    );
+    const accessCount = get(
+      `SELECT COUNT(*) AS count FROM chapter_student_access WHERE chapter_id = ?`,
+      [chapter.id],
+    )?.count || 0;
+    res.json({
+      ok: true,
+      chapterId: chapter.id,
+      studentId: student.id,
+      hasAccess: action === "grant",
+      accessCount,
     });
   } catch (error) {
     res.status(/不存在/.test(error.message) ? 404 : 400).json({ error: error.message });

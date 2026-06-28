@@ -131,6 +131,17 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS chapter_student_access (
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  granted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (chapter_id, student_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chapter_student_access_student
+  ON chapter_student_access(student_id);
 `);
 
 migrateExamQuestionUniqueConstraint();

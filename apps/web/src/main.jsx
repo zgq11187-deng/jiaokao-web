@@ -56,6 +56,8 @@ function App() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [syncNotice, setSyncNotice] = useState("");
+  const [chapterAccess, setChapterAccess] = useState({ chapterId: null, students: [] });
+  const [chapterAccessFilter, setChapterAccessFilter] = useState("");
   const [routePath, setRoutePath] = useState(() => window.location.pathname || "/");
 
   const selected = useMemo(
@@ -66,7 +68,6 @@ function App() {
   const isTeacher = user?.role === "teacher";
   const isAuthorized = isTeacher || user?.authorizationStatus === "approved";
   const sortedChapters = useMemo(() => {
-    if (!isTeacher) return chapters;
     const sorted = [...chapters];
 
     switch (chapterSortMode) {
@@ -90,10 +91,10 @@ function App() {
       default:
         return sorted;
     }
-  }, [chapters, isTeacher, chapterSortMode]);
+  }, [chapters, chapterSortMode]);
 
   const filteredChapters = useMemo(() => {
-    if (!isTeacher || !chapterSearchIndex.trim()) return sortedChapters;
+    if (!chapterSearchIndex.trim()) return sortedChapters;
     const searchText = chapterSearchIndex.trim().toLowerCase();
     return sortedChapters.filter((chapter) => {
       const title = (chapter.title || "").toLowerCase();
@@ -102,7 +103,7 @@ function App() {
       const chapterInfo = `第${chapterNo}章第${sectionNo}节`.toLowerCase();
       return title.includes(searchText) || chapterInfo.includes(searchText);
     });
-  }, [sortedChapters, chapterSearchIndex, isTeacher]);
+  }, [sortedChapters, chapterSearchIndex]);
   const workspaceTitle = isTeacher
     ? selected?.title || "请选择或新建章节"
     : studentPageTitle(routePath, selected);
@@ -138,7 +139,13 @@ function App() {
 
   useEffect(() => {
     if (selectedId && isAuthorized) loadDetail(selectedId);
-  }, [selectedId, user?.authorizationStatus]);
+    if (selectedId && isTeacher) {
+      loadChapterAccess(selectedId);
+    } else {
+      setChapterAccess({ chapterId: null, students: [] });
+      setChapterAccessFilter("");
+    }
+  }, [selectedId, user?.authorizationStatus, isTeacher]);
 
   async function request(path, options = {}) {
     const response = await fetch(`${API}${path}`, {
@@ -431,6 +438,32 @@ function App() {
     });
   }
 
+  async function loadChapterAccess(chapterId) {
+    if (!chapterId) {
+      setChapterAccess({ chapterId: null, students: [] });
+      return;
+    }
+    try {
+      const data = await request(`/api/teacher/chapters/${chapterId}/student-access`);
+      setChapterAccess({ chapterId, students: data.students || [] });
+    } catch (err) {
+      setError(err.message);
+      setChapterAccess({ chapterId, students: [] });
+    }
+  }
+
+  async function setChapterStudentAccess(chapterId, studentId, hasAccess) {
+    const action = hasAccess ? "grant" : "revoke";
+    await withBusy(hasAccess ? "开放给学生" : "取消授权", async () => {
+      await request(
+        `/api/teacher/chapters/${chapterId}/student-access/${studentId}/${action}`,
+        { method: "POST" },
+      );
+      await loadChapterAccess(chapterId);
+      await loadChapters();
+    });
+  }
+
   async function updateChapterOrder(chapterId, chapterNo, sectionNo) {
     await withBusy("更新章节序号", async () => {
       await request(`/api/teacher/chapters/${chapterId}/order`, {
@@ -668,7 +701,7 @@ function App() {
         <div className="list-head">
           <span>章节</span>
           <div className="chapter-actions">
-            {isTeacher && sortedChapters.length > 1 ? (
+            {sortedChapters.length > 1 ? (
               <input
                 type="text"
                 value={chapterSearchIndex}
@@ -689,7 +722,7 @@ function App() {
                 }}
               />
             ) : null}
-            {isTeacher && sortedChapters.length > 1 ? (
+            {sortedChapters.length > 1 ? (
               <select
                 value={chapterSortMode}
                 onChange={(e) => setChapterSortMode(e.target.value)}
@@ -737,10 +770,10 @@ function App() {
                 ? [selected]
                 : filteredChapters.slice(0, 1)
             : studentChapterListOpen
-              ? chapters
+              ? filteredChapters
               : selected
                 ? [selected]
-                : chapters.slice(0, 1)
+                : filteredChapters.slice(0, 1)
           ).map((chapter) => {
             const displayIndex = isTeacher
               ? sortedChapters.findIndex(ch => ch.id === chapter.id) + 1
@@ -805,7 +838,7 @@ function App() {
                   <strong>{chapter.title}</strong>
                   <span>
                     {chapter.status || "待生成"}
-                    {isTeacher ? ` · ${chapter.student_visible ? "学生可见" : "学生隐藏"}` : ""}
+                    {isTeacher ? ` · ${describeChapterVisibility(chapter)}` : ""}
                   </span>
                 </div>
               </button>
@@ -866,6 +899,10 @@ function App() {
             updateStudentAccess={updateStudentAccess}
             deleteStudent={deleteStudent}
             updateChapterVisibility={updateChapterVisibility}
+            chapterAccess={chapterAccess}
+            chapterAccessFilter={chapterAccessFilter}
+            setChapterAccessFilter={setChapterAccessFilter}
+            setChapterStudentAccess={setChapterStudentAccess}
           />
         ) : (
           <>
@@ -893,6 +930,80 @@ function App() {
         )}
       </section>
     </main>
+  );
+}
+
+function describeChapterVisibility(chapter) {
+  if (!chapter) return "";
+  if (Number(chapter.student_visible) === 1) return "对所有学生开放";
+  const count = Number(chapter.student_access_count || 0);
+  if (count > 0) return `仅 ${count} 位指定学生可见`;
+  return "对所有学生隐藏";
+}
+
+function ChapterAccessPanel({ chapter, access, filter, onFilterChange, onToggleStudent, busy }) {
+  if (!chapter) return null;
+  const isCurrent = access?.chapterId === chapter.id;
+  const students = isCurrent ? access.students : [];
+  const grantedCount = students.filter((student) => student.has_access).length;
+  const keyword = filter.trim().toLowerCase();
+  const visibleStudents = keyword
+    ? students.filter((student) => {
+        const name = (student.name || "").toLowerCase();
+        const phone = (student.phone || "").toLowerCase();
+        const note = (student.class_note || "").toLowerCase();
+        return name.includes(keyword) || phone.includes(keyword) || note.includes(keyword);
+      })
+    : students;
+
+  return (
+    <section className="chapter-access-panel">
+      <header>
+        <strong>指定学生开放</strong>
+        <span>
+          {chapter.student_visible
+            ? "已对所有学生开放；下方授权可在关闭全员开放后继续生效"
+            : `已授权 ${grantedCount} 位学生`}
+        </span>
+      </header>
+      <input
+        type="search"
+        placeholder="按姓名 / 手机号 / 备注搜索"
+        value={filter}
+        onChange={(event) => onFilterChange(event.target.value)}
+      />
+      {!isCurrent ? (
+        <p className="muted">正在加载学生列表……</p>
+      ) : !students.length ? (
+        <p className="muted">暂无已授权的学生账号。</p>
+      ) : !visibleStudents.length ? (
+        <p className="muted">没有匹配的学生。</p>
+      ) : (
+        <ul className="chapter-access-list">
+          {visibleStudents.map((student) => (
+            <li key={student.id}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={Boolean(student.has_access)}
+                  disabled={Boolean(busy)}
+                  onChange={(event) =>
+                    onToggleStudent(chapter.id, student.id, event.target.checked)
+                  }
+                />
+                <span>
+                  <strong>{student.name}</strong>
+                  <span className="muted">
+                    {student.phone}
+                    {student.class_note ? ` · ${student.class_note}` : ""}
+                  </span>
+                </span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -1095,6 +1206,10 @@ function TeacherWorkspace(props) {
     updateStudentAccess,
     deleteStudent,
     updateChapterVisibility,
+    chapterAccess,
+    chapterAccessFilter,
+    setChapterAccessFilter,
+    setChapterStudentAccess,
   } = props;
   const [studentForm, setStudentForm] = useState(emptyAuthForm);
   const [teacherForm, setTeacherForm] = useState(emptyAuthForm);
@@ -1395,19 +1510,27 @@ function TeacherWorkspace(props) {
         <>
           <section className="chapter-publish-panel">
             <div>
-              <strong>学生端可见性</strong>
-              <span>{selected.student_visible ? "学生可见" : "学生隐藏"}</span>
+              <strong>章节开放范围</strong>
+              <span>{describeChapterVisibility(selected)}</span>
             </div>
             {selected.student_visible ? (
               <button onClick={() => updateChapterVisibility(selected.id, false)} disabled={Boolean(busy)}>
-                对学生隐藏
+                对所有学生关闭
               </button>
             ) : (
               <button className="primary" onClick={() => updateChapterVisibility(selected.id, true)} disabled={Boolean(busy)}>
-                开放给学生
+                开放给所有学生
               </button>
             )}
           </section>
+          <ChapterAccessPanel
+            chapter={selected}
+            access={chapterAccess}
+            filter={chapterAccessFilter}
+            onFilterChange={setChapterAccessFilter}
+            onToggleStudent={setChapterStudentAccess}
+            busy={busy}
+          />
           <section className="flow-grid">
             <FlowCard index="1" title="Qwen 原始页面" icon={<Upload size={18} />}>
               <input
