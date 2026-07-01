@@ -61,6 +61,7 @@ const EXAM_CANDIDATE_SCOPE_LIMIT = 100;
 const TEACHING_PAGE_QUESTION_LIMIT = 200;
 const MIN_NOTION_TEACHING_MARKDOWN_LENGTH = 80;
 const MIXED_WRITTEN_QUESTION_TYPE = "简答/操作题";
+const PUBLIC_TRIAL_CHAPTER_ID = 26;
 
 app.use(cors({ origin: config.webOrigin, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
@@ -348,6 +349,36 @@ app.patch("/api/teacher/chapters/:id/order", requireTeacher, (req, res) => {
     [chapterNo || null, sectionNo || null, id]
   );
   res.json({ ok: true });
+});
+
+app.get("/api/public/trial-chapter", (_req, res) => {
+  try {
+    const chapter = get(
+      `SELECT id, title, chapter_no, section_no, status, student_visible, created_at, updated_at
+       FROM chapters
+       WHERE id = ?`,
+      [PUBLIC_TRIAL_CHAPTER_ID],
+    );
+    if (!chapter) return res.status(404).json({ error: "公开试用章节不存在" });
+
+    const teachingPage = get(
+      `SELECT id, chapter_id, markdown, created_at
+       FROM teaching_pages
+       WHERE chapter_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [chapter.id],
+    );
+
+    res.json({
+      ok: true,
+      chapter,
+      teachingPage: teachingPage || null,
+      questions: listPracticeQuestions(chapter.id),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.get("/api/chapters", requireAuthorized, async (req, res) => {

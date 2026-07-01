@@ -22,6 +22,12 @@ import {
   XCircle,
 } from "lucide-react";
 import "./styles.css";
+import featureMockExam from "./assets/trial-features/mock-exam.png";
+import featurePractice from "./assets/trial-features/practice.png";
+import featureResources from "./assets/trial-features/resources.png";
+import featureTeacherAuthorization from "./assets/trial-features/teacher-authorization.svg";
+import featureTeaching from "./assets/trial-features/teaching.png";
+import featureWrongQuestions from "./assets/trial-features/wrong-questions.png";
 
 const API = "";
 
@@ -59,6 +65,7 @@ function App() {
   const [chapterAccess, setChapterAccess] = useState({ chapterId: null, students: [] });
   const [chapterAccessFilter, setChapterAccessFilter] = useState("");
   const [routePath, setRoutePath] = useState(() => window.location.pathname || "/");
+  const [routeSearch, setRouteSearch] = useState(() => window.location.search || "");
 
   const selected = useMemo(
     () => chapters.find((chapter) => chapter.id === selectedId) || null,
@@ -107,13 +114,32 @@ function App() {
   const workspaceTitle = isTeacher
     ? selected?.title || "请选择或新建章节"
     : studentPageTitle(routePath, selected);
+  const authRole = new URLSearchParams(routeSearch).get("role") || "";
 
   useEffect(() => {
     loadMe();
   }, []);
 
   useEffect(() => {
-    const onPopState = () => setRoutePath(window.location.pathname || "/");
+    if (authRole === "teacher" && authMode === "register") {
+      setAuthMode("login");
+    }
+  }, [authRole, authMode]);
+
+  useEffect(() => {
+    if (!user || routePath !== "/login") return;
+    if (user.role === "teacher") {
+      navigateTo("/teacher");
+    } else if (user.authorizationStatus === "approved") {
+      navigateTo("/student");
+    }
+  }, [user?.id, user?.role, user?.authorizationStatus, routePath]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      setRoutePath(window.location.pathname || "/");
+      setRouteSearch(window.location.search || "");
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
@@ -196,6 +222,11 @@ function App() {
       setUser(data.user);
       setAuthForm(emptyAuthForm);
       setNeedsTeacherSetup(false);
+      if (data.user?.role === "teacher") {
+        navigateTo("/teacher");
+      } else if (data.user?.authorizationStatus === "approved") {
+        navigateTo("/student");
+      }
     });
   }
 
@@ -210,6 +241,7 @@ function App() {
       setStudents([]);
       setTeachers([]);
       await loadMe();
+      navigateTo("/");
     });
   }
 
@@ -597,9 +629,10 @@ function App() {
   }
 
   function navigateTo(path) {
-    if (path === routePath) return;
+    if (path === `${routePath}${routeSearch}` || path === routePath) return;
     window.history.pushState({}, "", path);
-    setRoutePath(path);
+    setRoutePath(window.location.pathname || "/");
+    setRouteSearch(window.location.search || "");
   }
 
   function selectChapter(chapterId, nextPath) {
@@ -614,6 +647,14 @@ function App() {
     return <FullPageMessage icon={<Loader2 className="spin" />} title="正在检查登录状态" />;
   }
 
+  if (routePath === "/") {
+    return <PublicHome navigateTo={navigateTo} user={user} />;
+  }
+
+  if (routePath === "/trial") {
+    return <PublicTrialPage navigateTo={navigateTo} user={user} />;
+  }
+
   if (!user) {
     return (
       <AuthScreen
@@ -625,6 +666,8 @@ function App() {
         busy={busy}
         error={error}
         needsTeacherSetup={needsTeacherSetup}
+        role={authRole}
+        navigateTo={navigateTo}
       />
     );
   }
@@ -640,6 +683,22 @@ function App() {
             : "你的访问申请已提交，请等待老师审核。审核通过后可查看课程章节。"
         }
         action={<button onClick={logout}><LogOut size={16} /> 退出登录</button>}
+      />
+    );
+  }
+
+  if (routePath === "/teacher" && user.role !== "teacher") {
+    return (
+      <FullPageMessage
+        icon={<ShieldCheck />}
+        title="需要老师权限"
+        description="当前账号不是老师账号，请返回公开主页或退出后使用老师账号登录。"
+        action={
+          <div className="message-actions">
+            <button onClick={() => navigateTo("/")}>返回公开主页</button>
+            <button onClick={logout}><LogOut size={16} /> 退出登录</button>
+          </div>
+        }
       />
     );
   }
@@ -664,6 +723,10 @@ function App() {
             <LogOut size={16} />
           </button>
         </section>
+
+        <button className="home-link-button" onClick={() => navigateTo("/")}>
+          <BookOpen size={16} /> 返回公开主页
+        </button>
 
         {!isTeacher ? (
           <StudentNavigation
@@ -1052,6 +1115,431 @@ function StudentChapterSwitcher({ chapters, selected, routePath, selectChapter }
   );
 }
 
+const publicWorkflowSteps = [
+  ["资料上传", "教师上传课件、PDF、图片或 Markdown 原始资料。"],
+  ["Qwen 结构化", "通义千问视觉模型将资料解析为可复用的原始页。"],
+  ["A 考点", "Notion Agent 对齐新旧大纲，提取章节考点。"],
+  ["B 真题", "按章节、题型和考点整理历年真题。"],
+  ["C 教学页", "生成可讲授、可自学、可导出的章节教学页。"],
+  ["人工审核", "教师确认后再发布给学生端。"],
+];
+
+const trialCourseFeatures = [
+  {
+    title: "章节教学页",
+    description: "围绕学习目标、重点难点和课堂任务组织完整教学内容。",
+    image: featureTeaching,
+    alt: "章节教学页界面预览",
+  },
+  {
+    title: "历年真题练习",
+    description: "按章节呈现真题，作答后查看答案解析。",
+    image: featurePractice,
+    alt: "历年真题练习界面预览",
+  },
+  {
+    title: "模拟考试",
+    description: "从本章题库生成模拟练习，帮助检验掌握情况。",
+    image: featureMockExam,
+    alt: "模拟考试界面预览",
+  },
+  {
+    title: "错题回看",
+    description: "集中回看错题、答案和解析，便于针对性复习。",
+    image: featureWrongQuestions,
+    alt: "错题回看界面预览",
+  },
+  {
+    title: "资料下载",
+    description: "导出教学网页、演示 PPT、章节题库和 Markdown。",
+    image: featureResources,
+    alt: "资料下载界面预览",
+  },
+  {
+    title: "老师授权开放",
+    description: "教师审核学生申请，并按章节开放正式课程访问。",
+    image: featureTeacherAuthorization,
+    alt: "老师授权开放界面示意图",
+  },
+];
+
+function PublicHome({ navigateTo, user }) {
+  const highlights = [
+    ["智能助教", "资料解析、考点提取、真题入库、教学页生成，减少重复整理资料的时间。", <Sparkles size={18} />],
+    ["智能助学", "章节学习、刷题练习、模拟考试、错题本，帮助学生形成清晰备考路径。", <BookOpen size={18} />],
+    ["可控发布", "教师审核、章节授权、学生粒度开放、生成日志留痕，避免 AI 内容直接发布。", <ShieldCheck size={18} />],
+  ];
+  const studentLoop = ["进入章节", "阅读教学页", "完成练习", "参加模拟考试", "回看错题"];
+  const teacherLoop = ["同步或新建章节", "上传课件 / PDF / 图片", "一键执行 A/B/C", "审核教学页与题库", "管理学生申请和章节权限", "导出 Markdown / HTML / PPT / 题库"];
+  const metrics = [
+    ["6 章", "覆盖计算机基础、Windows、Office、网络与信息安全等核心内容"],
+    ["369 道", "累计沉淀历年真题"],
+    ["约 20 分钟", "一章资料整理从约 4 小时压缩到分钟级"],
+    ["一等奖", "桌面版已获多省联赛一等奖，证书待下发"],
+  ];
+  const teacherEntryPath = user?.role === "teacher" ? "/teacher" : "/login?role=teacher";
+  const studentEntryPath =
+    user?.role === "student" && user?.authorizationStatus === "approved"
+      ? "/student"
+      : "/login?role=student";
+
+  return (
+    <main className="public-page">
+      <header className="public-nav">
+        <button className="public-brand" onClick={() => navigateTo("/")}>
+          <Database size={24} />
+          <span>教考智联</span>
+        </button>
+        <nav aria-label="主页导航">
+          <a href="#case">案例简介</a>
+          <a href="#workflow">AI 工作流</a>
+          <a href="#loop">教学闭环</a>
+          <a href="#impact">应用成效</a>
+          <a href="#entry">体验入口</a>
+        </nav>
+        <div className="public-nav-actions">
+          <button className="primary" onClick={() => navigateTo("/trial")}>无需登录试用</button>
+          <button onClick={() => navigateTo(studentEntryPath)}>学生端登录</button>
+          <button onClick={() => navigateTo(teacherEntryPath)}>老师端登录</button>
+        </div>
+      </header>
+
+      <section className="public-hero" id="case">
+        <div className="public-hero-copy">
+          <span className="public-eyebrow">第三十届辽宁省教育教学信息化交流活动 · 人工智能+教育案例</span>
+          <h1>教考智联</h1>
+          <h2>专升本《计算机应用基础》AI 教与学工作台</h2>
+          <p>
+            把原始资料、考试大纲、历年真题、章节教学页和学生练习连接成一条可审核、可发布、可追踪的教学闭环。
+          </p>
+          <div className="public-hero-actions" id="entry">
+            <button className="primary" onClick={() => navigateTo("/trial")}>
+              <BookOpen size={16} /> 无需登录试用教学页
+            </button>
+            <button onClick={() => navigateTo(studentEntryPath)}>
+              <UserCheck size={16} /> 学生端登录 / 申请访问
+            </button>
+            <button onClick={() => navigateTo(teacherEntryPath)}>
+              <KeyRound size={16} /> 老师端登录
+            </button>
+          </div>
+        </div>
+        <section className="public-workflow-preview" aria-label="AI 生成流程预览">
+          <div className="preview-head">
+            <span>AI 生成流程</span>
+            <strong>资料上传到审核发布</strong>
+          </div>
+          <div className="preview-step-list">
+            {publicWorkflowSteps.map(([title, text], index) => (
+              <article key={title}>
+                <span>{index + 1}</span>
+                <div>
+                  <strong>{title}</strong>
+                  <p>{text}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+          <p className="audit-note">所有 AI 输出进入待审核状态，由教师确认后再发布给学生。</p>
+        </section>
+      </section>
+
+      <section className="public-section">
+        <div className="public-section-title">
+          <span>AI+教育案例亮点</span>
+          <h2>服务老师备课，也服务学生备考</h2>
+        </div>
+        <div className="public-highlight-grid">
+          {highlights.map(([title, text, icon]) => (
+            <article key={title}>
+              <div className="public-card-icon">{icon}</div>
+              <h3>{title}</h3>
+              <p>{text}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="public-section" id="workflow">
+        <div className="public-section-title">
+          <span>A/B/C 智能体工作流</span>
+          <h2>从资料到教学页，流程清楚、状态可追踪</h2>
+        </div>
+        <div className="public-timeline">
+          {publicWorkflowSteps.map(([title, text], index) => (
+            <article key={title}>
+              <span>{index + 1}</span>
+              <div>
+                <h3>{title}</h3>
+                <p>{text}</p>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="public-section split-section" id="loop">
+        <article>
+          <div className="public-section-title compact">
+            <span>学生学习闭环</span>
+            <h2>从章节学习到错题回看</h2>
+          </div>
+          <ol className="public-check-list">
+            {studentLoop.map((item) => <li key={item}>{item}</li>)}
+          </ol>
+          <button className="primary" onClick={() => navigateTo("/trial")}>进入试用教学页</button>
+        </article>
+        <article>
+          <div className="public-section-title compact">
+            <span>老师备课闭环</span>
+            <h2>从章节管理到资源导出</h2>
+          </div>
+          <ol className="public-check-list">
+            {teacherLoop.map((item) => <li key={item}>{item}</li>)}
+          </ol>
+          <button onClick={() => navigateTo(teacherEntryPath)}>进入老师端</button>
+        </article>
+      </section>
+
+      <section className="public-section" id="impact">
+        <div className="public-section-title">
+          <span>应用成效与实践基础</span>
+          <h2>用事实说明案例基础</h2>
+        </div>
+        <div className="public-metric-grid">
+          {metrics.map(([value, label]) => (
+            <article key={value}>
+              <strong>{value}</strong>
+              <p>{label}</p>
+            </article>
+          ))}
+        </div>
+        <p className="public-footnote">
+          前期竞赛成果按当前可核验状态展示；证书下发后，可更新为正式获奖证明模块。
+        </p>
+      </section>
+
+      <footer className="public-footer">
+        <div>
+          <strong>可信说明</strong>
+          <p>
+            本平台聚焦专升本《计算机应用基础》。正式课程内容需登录并通过授权；公开试用页仅用于体验学习方式；AI 生成内容发布前需教师审核。
+          </p>
+        </div>
+        <div className="public-footer-actions">
+          <button className="primary" onClick={() => navigateTo("/trial")}>试用教学页</button>
+          <button onClick={() => navigateTo(studentEntryPath)}>学生端</button>
+          <button onClick={() => navigateTo(teacherEntryPath)}>老师端</button>
+        </div>
+      </footer>
+    </main>
+  );
+}
+
+function PublicTrialPage({ navigateTo, user }) {
+  const [trialData, setTrialData] = useState(null);
+  const [trialLoading, setTrialLoading] = useState(true);
+  const [trialError, setTrialError] = useState("");
+  const [answers, setAnswers] = useState({});
+  const [revealed, setRevealed] = useState({});
+  const workspacePath = user?.role === "teacher" ? "/teacher" : "/student";
+  const chapterTitle = trialData?.chapter?.title || "第 1 章第 1 节-计算机概述";
+  const teachingMarkdown = trialData?.teachingPage?.markdown || "";
+  const questions = trialData?.questions || [];
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTrialChapter() {
+      setTrialLoading(true);
+      setTrialError("");
+      try {
+        const response = await fetch(`${API}/api/public/trial-chapter`);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.error || `公开试用课加载失败：${response.status}`);
+        }
+        if (!cancelled) setTrialData(data);
+      } catch (error) {
+        if (!cancelled) setTrialError(error.message);
+      } finally {
+        if (!cancelled) setTrialLoading(false);
+      }
+    }
+
+    loadTrialChapter();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function updateTrialAnswer(question, key) {
+    setAnswers((current) => ({
+      ...current,
+      [question.id]: toggleOptionAnswer(current[question.id], key, question.type),
+    }));
+    setRevealed((current) => ({ ...current, [question.id]: false }));
+  }
+
+  function revealTrialAnswer(question) {
+    const hasSelectableOptions =
+      (parseQuestionOptions(question.options).length > 0 || /判断/.test(question.type || "")) &&
+      !/简答|操作/.test(question.type || "");
+    if (hasSelectableOptions && !answers[question.id]) return;
+    setRevealed((current) => ({ ...current, [question.id]: true }));
+  }
+
+  return (
+    <main className="trial-page">
+      <header className="trial-nav">
+        <button className="public-brand" onClick={() => navigateTo("/")}>
+          <Database size={24} />
+          <span>教考智联</span>
+        </button>
+        <div>
+          <button onClick={() => navigateTo("/")}>返回主页</button>
+          {user ? (
+            <button className="primary" onClick={() => navigateTo(workspacePath)}>进入我的工作台</button>
+          ) : (
+            <button className="primary" onClick={() => navigateTo("/login?role=student")}>申请学生访问</button>
+          )}
+        </div>
+      </header>
+
+      <section className="trial-layout">
+        <aside className="trial-sidebar">
+          <span>公开试用课 · 无需登录</span>
+          <h1>{chapterTitle}</h1>
+          <p>本页公开展示学生端真实章节的完整教学页和练习题。答题结果只保存在当前浏览器页面，不记录个人数据。</p>
+          <button className="primary" onClick={() => navigateTo("/login?role=student")}>体验后申请正式课程</button>
+        </aside>
+
+        <article className="trial-content">
+          {trialLoading ? (
+            <section className="trial-status">
+              <Loader2 size={22} className="spin" />
+              <h2>正在加载公开试用课</h2>
+              <p>正在读取第 1 章第 1 节的教学页和练习题。</p>
+            </section>
+          ) : null}
+
+          {!trialLoading && trialError ? (
+            <section className="trial-status error">
+              <h2>公开试用课暂时无法打开</h2>
+              <p>{trialError}</p>
+              <button onClick={() => navigateTo("/")}>返回公开主页</button>
+            </section>
+          ) : null}
+
+          {!trialLoading && !trialError ? (
+            <section className="trial-lesson">
+              <span className="public-eyebrow">完整教学页</span>
+              <h2>{chapterTitle}</h2>
+              {teachingMarkdown ? (
+                <MarkdownPreview markdown={teachingMarkdown} />
+              ) : (
+                <div className="empty">试用章节暂未生成教学页。</div>
+              )}
+            </section>
+          ) : null}
+
+          {!trialLoading && !trialError ? (
+            <section className="trial-question-list">
+              <div className="section-title">
+                <ClipboardList size={18} />
+                <h2>章节练习</h2>
+              </div>
+              <p>这里的练习只用于公开体验，不写入错题本或练习记录。</p>
+              {questions.length ? (
+                <div className="trial-practice-list">
+                  {questions.map((question, index) => (
+                    <TrialQuestionCard
+                      key={question.id}
+                      question={question}
+                      index={index}
+                      selectedAnswer={answers[question.id] || ""}
+                      revealed={Boolean(revealed[question.id])}
+                      onSelect={(key) => updateTrialAnswer(question, key)}
+                      onReveal={() => revealTrialAnswer(question)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="empty">该试用章节暂无可公开展示的练习题。</div>
+              )}
+            </section>
+          ) : null}
+
+          <section>
+            <h3>正式课程会提供什么</h3>
+            <div className="trial-feature-grid">
+              {trialCourseFeatures.map((feature) => (
+                <article className="trial-feature-card" key={feature.title}>
+                  <img src={feature.image} alt={feature.alt} loading="lazy" />
+                  <div>
+                    <strong>{feature.title}</strong>
+                    <p>{feature.description}</p>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        </article>
+      </section>
+    </main>
+  );
+}
+
+function TrialQuestionCard({ question, index, selectedAnswer, revealed, onSelect, onReveal }) {
+  const parsedOptions = parseQuestionOptions(question.options);
+  const options = parsedOptions.length ? parsedOptions : /判断/.test(question.type || "") ? ["√ 正确", "× 错误"] : [];
+  const isChoiceQuestion = options.length > 0 && !/简答|操作/.test(question.type || "");
+  const isCorrect = trialAnswerCorrect(selectedAnswer, question.answer);
+
+  return (
+    <article className="trial-practice-card">
+      <div className="trial-question-meta">
+        <span>{index + 1}</span>
+        <strong>{question.type || "练习题"}</strong>
+        {question.year ? <em>{question.year}</em> : null}
+      </div>
+      <h3>{question.stem}</h3>
+      {isChoiceQuestion ? (
+        <div className="trial-options">
+          {options.map((option) => {
+            const key = optionKey(option);
+            return (
+              <button
+                key={option}
+                className={selectedAnswerIncludes(selectedAnswer, key) ? "active" : ""}
+                onClick={() => onSelect(key)}
+              >
+                {option}
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="trial-written-answer">
+          <p>本题为主观题，公开试用页提供参考答案和解析，不记录作答。</p>
+        </div>
+      )}
+      <div className="trial-question-actions">
+        <button onClick={onReveal} disabled={isChoiceQuestion && !selectedAnswer}>
+          查看答案解析
+        </button>
+      </div>
+      {revealed ? (
+        <div className={isChoiceQuestion && !isCorrect ? "trial-result wrong" : "trial-result correct"}>
+          {isChoiceQuestion ? (isCorrect ? "回答正确。" : "当前选择不正确。") : "参考答案。"}
+          <p>正确答案：{question.answer || "未填写"}</p>
+          <p>解析：{question.analysis || "暂无解析"}</p>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 function AuthScreen({
   mode,
   setMode,
@@ -1061,9 +1549,14 @@ function AuthScreen({
   busy,
   error,
   needsTeacherSetup,
+  role,
+  navigateTo,
 }) {
   const isSetup = mode === "setup";
   const isRegister = mode === "register";
+  const isTeacherEntry = role === "teacher";
+  const isStudentEntry = role === "student";
+  const loginTitle = isTeacherEntry ? "老师端登录" : isStudentEntry ? "学生端登录" : "登录教考智联";
   return (
     <main className="auth-shell">
       <section className="auth-panel">
@@ -1074,13 +1567,17 @@ function AuthScreen({
             <span>专升本《计算机应用基础》AIGC工作台</span>
           </div>
         </div>
-        <h1>{isSetup ? "初始化老师账号" : isRegister ? "申请访问" : "登录教考智联"}</h1>
+        <h1>{isSetup ? "初始化老师账号" : isRegister ? "申请访问" : loginTitle}</h1>
         <p>
           {isSetup
             ? "当前还没有老师账号，请先创建一个老师账号。"
             : isRegister
               ? "请填写真实信息，老师审核通过后即可进入课程学习。"
-              : "该内容仅对已授权学生和老师开放。"}
+              : isTeacherEntry
+                ? "老师端用于章节管理、学生授权、AI 生成流程和资源导出。"
+                : isStudentEntry
+                  ? "学生端用于章节学习、练习、模拟考试和错题回看。"
+                  : "该内容仅对已授权学生和老师开放。"}
         </p>
         {error ? <div className="error">{error}</div> : null}
         <form onSubmit={onSubmit} className="auth-form">
@@ -1116,10 +1613,11 @@ function AuthScreen({
         </form>
         {!needsTeacherSetup ? (
           <div className="auth-switch">
-            {mode === "login" ? (
+            <button onClick={() => navigateTo("/")}>返回公开主页</button>
+            {mode === "login" && !isTeacherEntry ? (
               <button onClick={() => setMode("register")}>还没有账号？申请访问</button>
             ) : (
-              <button onClick={() => setMode("login")}>已有账号？去登录</button>
+              !isTeacherEntry ? <button onClick={() => setMode("login")}>已有账号？去登录</button> : null
             )}
           </div>
         ) : null}
@@ -1130,7 +1628,7 @@ function AuthScreen({
 
 function StudentNavigation({ routePath, selectedId, navigateTo }) {
   const items = [
-    ["/", "学习首页", <BookOpen size={16} />],
+    ["/student", "学习首页", <BookOpen size={16} />],
     ["/chapters", "课程章节", <ClipboardList size={16} />],
     ["/practice", "刷题练习", <FileText size={16} />],
     ["/mock-exam", "模拟考试", <Layers size={16} />],
@@ -1547,7 +2045,7 @@ function TeacherWorkspace(props) {
               </button>
             </FlowCard>
 
-            <FlowCard index="2" title="Codex Agent A/B/C" icon={<Layers size={18} />}>
+            <FlowCard index="2" title="DeepSeek Agent A/B/C" icon={<Layers size={18} />}>
               <button onClick={() => runStep("fill-outline", "A 自动填充考点")} disabled={Boolean(busy)}>
                 A 自动填充考点
               </button>
@@ -1993,7 +2491,7 @@ function StudentWorkspace({
     });
   }
 
-  if (routePath === "/" || routePath === "/chapters") {
+  if (routePath === "/student" || routePath === "/chapters") {
     return (
       <StudentHome
         chapters={chapters}
@@ -2810,6 +3308,21 @@ function toggleOptionAnswer(currentAnswer, key, questionType) {
   return [...values].sort().join("");
 }
 
+function trialAnswerCorrect(selectedAnswer, correctAnswer) {
+  const normalize = (answer) => {
+    const raw = String(answer || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (/^(√|对|正确|true|t|yes|y)$/i.test(lower) || /^(√|对|正确)(?:\s|。|，|,|\.|（|\()/i.test(raw)) return "TRUE";
+    if (/^(×|x|错|错误|false|f|no|n)$/i.test(lower) || /^(×|x|错|错误)(?:\s|。|，|,|\.|（|\()/i.test(raw)) return "FALSE";
+    const letters = raw.toUpperCase().match(/[A-H]/g);
+    if (letters?.length) return [...new Set(letters)].sort().join("");
+    return raw.replace(/\s+/g, "").toUpperCase();
+  };
+  const expected = normalize(correctAnswer);
+  return Boolean(expected && normalize(selectedAnswer) === expected);
+}
+
 function toToneClass(value) {
   const normalized = String(value || "default")
     .trim()
@@ -2887,7 +3400,7 @@ function routeForStudentTab(tab, selectedId) {
 
 function studentPageTitle(pathname, selected) {
   const path = String(pathname || "/");
-  if (path === "/") return "学习首页";
+  if (path === "/student") return "学习首页";
   if (path === "/chapters") return "课程章节";
   if (path === "/practice") return "章节练习";
   if (path === "/wrong-questions") return "错题回看";
