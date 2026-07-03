@@ -30,6 +30,7 @@ import featureTeaching from "./assets/trial-features/teaching.png";
 import featureWrongQuestions from "./assets/trial-features/wrong-questions.png";
 
 const API = "";
+const CODEX_AGENT_VISIBLE_STORAGE_KEY = "jiaokao.codexAgentVisible";
 let mermaidPromise = null;
 
 function loadMermaid() {
@@ -1735,6 +1736,21 @@ function TeacherWorkspace(props) {
   const [questionManagerOpen, setQuestionManagerOpen] = useState(false);
   const [teacherListOpen, setTeacherListOpen] = useState(false);
   const [studentAuthOpen, setStudentAuthOpen] = useState(false);
+  const [codexAgentVisible, setCodexAgentVisible] = useState(() => {
+    try {
+      return localStorage.getItem(CODEX_AGENT_VISIBLE_STORAGE_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CODEX_AGENT_VISIBLE_STORAGE_KEY, String(codexAgentVisible));
+    } catch {
+      // localStorage may be unavailable in privacy modes; visibility still works for this session.
+    }
+  }, [codexAgentVisible]);
 
   async function submitStudent(event) {
     event.preventDefault();
@@ -1777,6 +1793,136 @@ function TeacherWorkspace(props) {
     await onConfirm(password);
     window.alert(`${label} 的密码已重置，请通知该用户使用新密码重新登录。`);
   }
+
+  const flowCards = [
+    {
+      key: "qwen",
+      title: "Qwen 原始页面",
+      icon: <Upload size={18} />,
+      content: (
+        <>
+          <input
+            type="file"
+            multiple
+            onChange={(event) => setFiles([...event.target.files])}
+          />
+          <p>{files.length ? `已选择 ${files.length} 个文件` : "支持图片、PDF、CSV、TXT、MD"}</p>
+          <button onClick={uploadRawPage} disabled={Boolean(busy)}>
+            <Sparkles size={16} /> 生成 Markdown 原始页
+          </button>
+          <button onClick={createLecturePage} disabled={Boolean(busy)}>
+            <FileText size={16} /> 创建 Notion 讲义页
+          </button>
+          {!codexAgentVisible ? (
+            <button className="subtle-button" onClick={() => setCodexAgentVisible(true)} disabled={Boolean(busy)}>
+              显示
+            </button>
+          ) : null}
+        </>
+      ),
+    },
+  ];
+
+  if (codexAgentVisible) {
+    flowCards.push({
+      key: "codex",
+      title: "Agent A/B/C",
+      icon: <Layers size={18} />,
+      content: (
+        <>
+          <button className="subtle-button" onClick={() => setCodexAgentVisible(false)} disabled={Boolean(busy)}>
+            隐藏
+          </button>
+          <button onClick={() => runStep("fill-outline", "A 自动填充考点")} disabled={Boolean(busy)}>
+            A 自动填充考点
+          </button>
+          <button onClick={() => runStep("import-exam-questions", "B 真题自动入库")} disabled={Boolean(busy)}>
+            B 真题自动入库
+          </button>
+          <button onClick={() => runStep("generate-teaching-page", "C 生成教学页")} disabled={Boolean(busy)}>
+            C 生成教学页
+          </button>
+          <button className="primary" onClick={() => runStep("generate-all", "A/B/C 串联生成")} disabled={Boolean(busy)}>
+            <Sparkles size={16} /> 一键执行 A/B/C
+          </button>
+        </>
+      ),
+    });
+  }
+
+  flowCards.push(
+    {
+      key: "deepseek",
+      title: "DeepSeek Agent A/B/C",
+      icon: <Layers size={18} />,
+      content: (
+        <>
+          <button onClick={() => runStep("deepseek-fill-outline", "DeepSeek A 自动填充考点")} disabled={Boolean(busy)}>
+            A 自动填充考点
+          </button>
+          <button onClick={() => runStep("deepseek-import-exam-questions", "DeepSeek B 真题自动入库")} disabled={Boolean(busy)}>
+            B 真题自动入库
+          </button>
+          <button onClick={() => runStep("deepseek-generate-teaching-page", "DeepSeek C 生成教学页")} disabled={Boolean(busy)}>
+            C 生成教学页
+          </button>
+          <button className="primary" onClick={() => runStep("deepseek-generate-all", "一键执行 DeepSeek A/B/C")} disabled={Boolean(busy)}>
+            <Sparkles size={16} /> 一键执行 DeepSeek A/B/C
+          </button>
+        </>
+      ),
+    },
+    {
+      key: "questions",
+      title: "章节题库与教学页管理",
+      icon: <ClipboardList size={18} />,
+      content: (
+        <>
+          <button onClick={syncCurrentTeachingPageFromNotion} disabled={Boolean(busy)}>
+            <RefreshCw size={16} /> 同步当前章节教学页
+          </button>
+          <button
+            onClick={async () => {
+              await runStep("import-teaching-questions", "导入当前章节习题");
+              setQuestionManagerOpen(true);
+            }}
+            disabled={Boolean(busy)}
+          >
+            <ClipboardList size={16} /> 导入当前章节习题
+          </button>
+          <button onClick={() => setQuestionManagerOpen((open) => !open)} disabled={!selected}>
+            <ClipboardList size={16} /> {questionManagerOpen ? "收起章节习题" : "显示/编辑章节习题"}
+          </button>
+          <button onClick={cleanupDuplicateQuestions} disabled={Boolean(busy)}>
+            <ClipboardList size={16} /> 清理当前章节重复题
+          </button>
+        </>
+      ),
+    },
+    {
+      key: "notion",
+      title: "Notion 自动化",
+      icon: <RefreshCw size={18} />,
+      content: (
+        <button onClick={scanNotionTriggers} disabled={Boolean(busy)}>
+          <RefreshCw size={16} /> 扫描 Notion 触发项
+        </button>
+      ),
+    },
+    {
+      key: "exports",
+      title: "导出",
+      icon: <Download size={18} />,
+      content: (
+        <>
+          <button onClick={() => exportFile("ppt")}>导出演示 PPT</button>
+          <button onClick={() => exportFile("site")}>导出教学网页</button>
+          <button onClick={() => exportFile("question-bank")}>导出章节题库</button>
+          <button onClick={() => exportFile("markdown")}>导出 Markdown</button>
+        </>
+      ),
+    },
+  );
 
   return (
     <>
@@ -2046,85 +2192,11 @@ function TeacherWorkspace(props) {
             busy={busy}
           />
           <section className="flow-grid">
-            <FlowCard index="1" title="Qwen 原始页面" icon={<Upload size={18} />}>
-              <input
-                type="file"
-                multiple
-                onChange={(event) => setFiles([...event.target.files])}
-              />
-              <p>{files.length ? `已选择 ${files.length} 个文件` : "支持图片、PDF、CSV、TXT、MD"}</p>
-              <button onClick={uploadRawPage} disabled={Boolean(busy)}>
-                <Sparkles size={16} /> 生成 Markdown 原始页
-              </button>
-              <button onClick={createLecturePage} disabled={Boolean(busy)}>
-                <FileText size={16} /> 创建 Notion 讲义页
-              </button>
-            </FlowCard>
-
-            <FlowCard index="2" title="Codex Agent A/B/C" icon={<Layers size={18} />}>
-              <button onClick={() => runStep("fill-outline", "A 自动填充考点")} disabled={Boolean(busy)}>
-                A 自动填充考点
-              </button>
-              <button onClick={() => runStep("import-exam-questions", "B 真题自动入库")} disabled={Boolean(busy)}>
-                B 真题自动入库
-              </button>
-              <button onClick={() => runStep("generate-teaching-page", "C 生成教学页")} disabled={Boolean(busy)}>
-                C 生成教学页
-              </button>
-              <button className="primary" onClick={() => runStep("generate-all", "A/B/C 串联生成")} disabled={Boolean(busy)}>
-                <Sparkles size={16} /> 一键执行 Codex A/B/C
-              </button>
-            </FlowCard>
-
-            <FlowCard index="3" title="DeepSeek Agent A/B/C" icon={<Layers size={18} />}>
-              <p className="muted">已接入 DeepSeek A/B/C；一键执行后续实现。</p>
-              <button onClick={() => runStep("deepseek-fill-outline", "DeepSeek A 自动填充考点")} disabled={Boolean(busy)}>
-                A 自动填充考点
-              </button>
-              <button onClick={() => runStep("deepseek-import-exam-questions", "DeepSeek B 真题自动入库")} disabled={Boolean(busy)}>
-                B 真题自动入库
-              </button>
-              <button onClick={() => runStep("deepseek-generate-teaching-page", "DeepSeek C 生成教学页")} disabled={Boolean(busy)}>
-                C 生成教学页
-              </button>
-              <button className="primary" disabled>
-                <Sparkles size={16} /> 一键执行 DeepSeek A/B/C
-              </button>
-            </FlowCard>
-
-            <FlowCard index="4" title="章节题库与教学页管理" icon={<ClipboardList size={18} />}>
-              <button onClick={syncCurrentTeachingPageFromNotion} disabled={Boolean(busy)}>
-                <RefreshCw size={16} /> 同步当前章节教学页
-              </button>
-              <button
-                onClick={async () => {
-                  await runStep("import-teaching-questions", "导入当前章节习题");
-                  setQuestionManagerOpen(true);
-                }}
-                disabled={Boolean(busy)}
-              >
-                <ClipboardList size={16} /> 导入当前章节习题
-              </button>
-              <button onClick={() => setQuestionManagerOpen((open) => !open)} disabled={!selected}>
-                <ClipboardList size={16} /> {questionManagerOpen ? "收起章节习题" : "显示/编辑章节习题"}
-              </button>
-              <button onClick={cleanupDuplicateQuestions} disabled={Boolean(busy)}>
-                <ClipboardList size={16} /> 清理当前章节重复题
-              </button>
-            </FlowCard>
-
-            <FlowCard index="5" title="Notion 自动化" icon={<RefreshCw size={18} />}>
-              <button onClick={scanNotionTriggers} disabled={Boolean(busy)}>
-                <RefreshCw size={16} /> 扫描 Notion 触发项
-              </button>
-            </FlowCard>
-
-            <FlowCard index="6" title="导出" icon={<Download size={18} />}>
-              <button onClick={() => exportFile("ppt")}>导出演示 PPT</button>
-              <button onClick={() => exportFile("site")}>导出教学网页</button>
-              <button onClick={() => exportFile("question-bank")}>导出章节题库</button>
-              <button onClick={() => exportFile("markdown")}>导出 Markdown</button>
-            </FlowCard>
+            {flowCards.map((card, index) => (
+              <FlowCard key={card.key} index={String(index + 1)} title={card.title} icon={card.icon}>
+                {card.content}
+              </FlowCard>
+            ))}
           </section>
 
           {questionManagerOpen ? (

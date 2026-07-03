@@ -3,7 +3,7 @@ import { config } from "./config.js";
 
 const RETRY_COUNT = 2;
 
-export async function runDeepSeekJson({ prompt, schemaPath, step, maxTokens }) {
+export async function runDeepSeekJson({ prompt, schemaPath, step, maxTokens, model }) {
   if (!config.deepseek.apiKey) {
     throw new Error("DeepSeek API key 未配置：请在 .env 中设置 DEEPSEEK_API_KEY");
   }
@@ -16,6 +16,7 @@ export async function runDeepSeekJson({ prompt, schemaPath, step, maxTokens }) {
         schema,
         step,
         maxTokens,
+        model,
         retryReason: lastError?.message || "",
       });
     } catch (error) {
@@ -25,7 +26,7 @@ export async function runDeepSeekJson({ prompt, schemaPath, step, maxTokens }) {
   throw new Error(`DeepSeek ${step} 输出校验失败：${lastError.message}`);
 }
 
-async function requestDeepSeekJson({ prompt, schema, step, maxTokens, retryReason }) {
+async function requestDeepSeekJson({ prompt, schema, step, maxTokens, model, retryReason }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.deepseek.timeoutMs);
   try {
@@ -36,7 +37,7 @@ async function requestDeepSeekJson({ prompt, schema, step, maxTokens, retryReaso
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: config.deepseek.model,
+        model: model || config.deepseek.model,
         messages: [
           {
             role: "system",
@@ -64,8 +65,11 @@ async function requestDeepSeekJson({ prompt, schema, step, maxTokens, retryReaso
     } catch {
       throw new Error("DeepSeek API 响应不是 JSON");
     }
-    const content = payload.choices?.[0]?.message?.content?.trim() || "";
-    if (!content) throw new Error("DeepSeek 返回内容为空");
+    const choice = payload.choices?.[0];
+    const content = choice?.message?.content?.trim() || "";
+    if (!content) {
+      throw new Error(emptyContentMessage(payload));
+    }
     const parsed = parseJsonContent(content);
     validateAgainstSchema(parsed, schema);
     return parsed;
@@ -154,6 +158,7 @@ function deepSeekStepRules(step) {
       "- 题型标题使用加粗文本，例如 **单选题**，不要使用四级或更深 Markdown 标题。",
       "- 每个题型内部的题目编号必须单独从 1. 开始，例如 1. 题干、2. 题干。",
       "- 题干、选项、答案和解析必须完整保留，不得为满足排序或编号而删减内容。",
+      "- 历年真题演练区域必须包含纯文本独立行“历年真题演练开始”和“历年真题演练结束”，两个边界不得放入 callout、details、表格、代码块或列表。",
       "- 返回前自行检查：markdown 中的英文双引号、反斜杠、Mermaid 代码块和换行都不会破坏 JSON 字符串。",
     ];
   }
@@ -161,26 +166,43 @@ function deepSeekStepRules(step) {
   return [
     "",
     "DeepSeek B 真题入库专用规则：",
-    "- 必须按 5 步选题法筛选题目：锚定考纲关键词、排除相邻章节、判定边界题、按题型归类、形成入库摘要。",
+    "- 必须按 Notion AI 5 步选题法筛选题目：锚定考纲关键词、完整阅读候选题库、排除相邻章节、判定边界题、形成课堂讲评题组。",
     "- 第 1 步：从当前章节标题、新大纲考点、重点、难点中提取命中词；强命中词可优先入选，弱命中词必须继续做边界判定。",
-    "- 第 2 步：先做排除。计算机发展史、第一台计算机、应用领域归计算机概述；进制转换、ASCII、位/字节换算归数据表示；Windows、Office、网络、安全类题归对应后续章节。判断主考点，不看顺带出现的词。",
+    "- 第 2 步：完整阅读 examQuestionCandidates 候选题库，判断题目的主考点，不只按关键词机械匹配。",
     "- 第 3 步：边界题宁缺毋滥。只考存储单位换算的题不选；考 ROM/RAM 断电特性、存储器分类、CPU/总线/系统软件/多媒体核心概念的题可选；只考计算机语言通用性的不默认归软件分类。",
-    "- 第 4 步：questions 输出顺序必须按题型排列：单选题、多选题、判断题、简答题、操作题；同题型内优先覆盖高频考点和不同问法。",
-    "- 第 5 步：summary 必须用一句话说明选题依据，例如命中的高频考点、排除的相邻章节题、最终入库建议；不要输出完整推理过程。",
-    "- questions 最多返回 8 题；如果可选题超过 8 题，只选最相关的 8 题。",
+    "- 第 4 步：先做排除。计算机发展史、第一台计算机、应用领域归计算机概述；进制转换、ASCII、位/字节换算归数据表示；Windows、Office、网络、安全类题归对应后续章节。判断主考点，不看顺带出现的词。",
+    "- 第 5 步：summary 必须用一句话说明最终选题数量和覆盖主线，例如“共选 20 题，覆盖指令执行、硬件组成、存储器、软件系统”；不要输出完整推理过程。",
+    "- selectedCandidateIds 目标返回 20 个，最多返回 20 个；候选不足或质量不足时可以少于 20 个。",
+    "- 不强制题型比例，总数和考点覆盖优先；若某题型候选质量更高，可以多选该题型。",
+    "- selectedCandidateIds 中只能填写上下文 examQuestionCandidates 里已有的 candidateId。",
+    "- 不得返回题干、选项、答案、解析、source、year、knowledgeTags 等长文本字段。",
     "- 不要为了凑题型而编造题；没有操作题就不要输出操作题。",
-    "- questions 数组中每个题目对象之间必须使用英文逗号分隔。",
-    "- 每个字段都必须是单行字符串；字符串内部禁止出现真实换行。",
-    "- options 必须使用单行格式，例如：A. 选项一 | B. 选项二 | C. 选项三 | D. 选项四。",
-    "- analysis 控制在 120 个中文字符以内。",
     "- 不得输出 Markdown 表格、代码块、项目符号列表或编号列表。",
-    '- 如果无法保证合法 JSON，返回 {"questions":[],"warnings":["无法生成合法 JSON"],"summary":"未入库"}。',
-    "- 返回前自行检查：questions 数组逗号正确、字符串引号已转义、没有未转义换行。",
+    '- 如果无法选择题目，返回 {"selectedCandidateIds":[],"warnings":["未命中可入库候选题"],"summary":"未入库"}。',
+    "- 返回前自行检查：selectedCandidateIds 是字符串数组，warnings 是字符串数组，summary 是字符串。",
   ];
 }
 
 function jsonParseMessage(error) {
   return `JSON 语法错误：${error.message}。请只返回可被 JSON.parse 解析的对象，尤其检查 questions 数组逗号、markdown 字符串、字符串引号、反斜杠和换行转义`;
+}
+
+function emptyContentMessage(payload) {
+  const choice = payload?.choices?.[0] || {};
+  const message = choice.message && typeof choice.message === "object" ? choice.message : {};
+  const messageKeys = Object.keys(message);
+  const usage = payload?.usage && typeof payload.usage === "object"
+    ? Object.entries(payload.usage)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(",")
+    : "无";
+  return [
+    "DeepSeek 返回内容为空",
+    `finish_reason=${choice.finish_reason || "无"}`,
+    `messageKeys=${messageKeys.length ? messageKeys.join(",") : "无"}`,
+    `reasoningLength=${String(message.reasoning_content || "").length}`,
+    `usage=${usage}`,
+  ].join("；");
 }
 
 function validateAgainstSchema(value, schema, path = "$") {

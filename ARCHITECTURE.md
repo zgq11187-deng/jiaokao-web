@@ -149,7 +149,7 @@ project/
 - `POST /api/chapters/:id/fill-outline`：Codex Agent A 自动填充考点
 - `POST /api/chapters/:id/deepseek-fill-outline`：DeepSeek Agent A 自动填充考点，复用 Codex A 的上下文、prompt、schema、Notion 写回和 SQLite 日志落点
 - `POST /api/chapters/:id/import-exam-questions`：Codex Agent B 真题入库；候选题来源包括 Notion 真题库、章节关联真题、真题原始资料和本地 SQLite 已沉淀题库
-- `POST /api/chapters/:id/deepseek-import-exam-questions`：DeepSeek Agent B 真题入库，复用 Codex B 的上下文、prompt、schema、Notion 真题关联/创建、SQLite 入库和重复题跳过逻辑
+- `POST /api/chapters/:id/deepseek-import-exam-questions`：DeepSeek Agent B 真题入库，只让模型读取精简候选并返回最多 20 个候选题 `candidateId` 和摘要，后端再从 Notion / SQLite 候选题复制原题入库，避免长题干造成非法 JSON；DeepSeek B 不按当前章节重复题跳过，选中题目会插入为本轮选题结果；若 DeepSeek 偶发返回空内容或数量不足，后端按已排序候选题兜底补齐并写入 warning
 - `POST /api/chapters/:id/import-teaching-questions`：从当前章节最新教学页中只导入显式双边界内题目：`历年真题演练开始` 到 `历年真题演练结束` 作为历年真题来源，`模拟题开始` 到 `模拟题结束` 作为模拟题来源；边界外内容一律不解析、不导入，不再回退全文扫描；边界标记兼容 Markdown 标题、emoji、加粗和空格变体；没有任何开始标记时返回 0 题并提示老师补充边界；只有开始没有结束时从开始标记解析到文末并返回 warning；边界内支持 `单选题：...`、`单选题（2017）：...`、`单选题（2023补充）：...`、`多选题：...`、`多选题（2023）：...`、`判断题：...`、`判断题（2017）：...`、`单选题（模拟题）：...`、`多选题（模拟题）：...`、`判断题（模拟题）：...`、`操作题（模拟题）：...` 等题型前缀，解析时去掉题型和年份 / 补充说明前缀，年份或补充信息写入 `year`
 - `POST /api/chapters/:id/cleanup-duplicate-questions`：老师清理当前章节 Notion AI 导入重复题
 - `POST /api/teacher/chapters/:id/questions`：老师手动新增当前章节题目
@@ -157,7 +157,7 @@ project/
 - `POST /api/teacher/questions/:id/archive`：老师隐藏题目，不物理删除历史答题记录
 - `POST /api/teacher/questions/:id/restore`：老师恢复已隐藏题目
 - `POST /api/chapters/:id/generate-teaching-page`：Codex Agent C 生成教学页
-- `POST /api/chapters/:id/deepseek-generate-teaching-page`：DeepSeek Agent C 生成教学页，使用更大的 `DEEPSEEK_TEACHING_MAX_TOKENS` 输出上限，生成后仍是待人工检查的草稿
+- `POST /api/chapters/:id/deepseek-generate-teaching-page`：DeepSeek Agent C 生成教学页，默认使用 `DEEPSEEK_TEACHING_MODEL=deepseek-chat` 避免推理模型把输出耗在 `reasoning_content` 上，同时使用更大的 `DEEPSEEK_TEACHING_MAX_TOKENS` 输出上限，生成后仍是待人工检查的草稿
 - `POST /api/chapters/:id/generate-all`：串联执行 A/B/C
 - `POST /api/notion-agent/scan-triggers`：老师手动扫描 Notion 复选框触发项，并执行 A/B/C
 - `GET /api/chapters/:id/export/:kind`：导出 Markdown、HTML、PPT、题库
@@ -186,7 +186,7 @@ project/
 5. 后端保存原始页到 SQLite `raw_pages`
 6. Codex Agent A 基于新旧大纲、章节和原始页生成考点；DeepSeek Agent A 使用同一上下文、prompt 和 JSON schema，可作为国产模型入口生成同类考点结果
 7. 后端把 A 结果写入 SQLite，并同步 Notion 章节属性
-8. Codex Agent B 或 DeepSeek Agent B 从 Notion 真题库、本地 SQLite 已沉淀题库、章节关联真题和真题原始资料中筛选章节相关真题并入库，二者共享同一上下文、JSON schema、Notion 真题关联/创建和 SQLite 入库规则
+8. Codex Agent B 从 Notion 真题库、本地 SQLite 已沉淀题库、章节关联真题和真题原始资料中筛选章节相关真题并入库，并保留原有重复题跳过策略；DeepSeek Agent B 只输出候选题 `candidateId`，后端按 ID 复制原题并执行 Notion 关联和 SQLite 入库，作为参赛国产模型选题链路允许重复插入以保留本轮选题结果；DeepSeek B 返回空内容或数量不足时，后端使用排序后的已有候选题兜底补齐，不编造新题
 9. 后端写入 SQLite `exam_questions`，并关联 Notion 真题页
 10. Codex Agent C 或 DeepSeek Agent C 生成章节教学页 Markdown；DeepSeek C 使用更大的 token 输出上限以降低教学页截断风险
 11. 后端先把教学页追加/写回 Notion 章节库，再保存到 SQLite `teaching_pages`

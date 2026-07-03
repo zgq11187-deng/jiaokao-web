@@ -43,6 +43,7 @@ export const config = {
     apiKey: process.env.DEEPSEEK_API_KEY || "",
     baseUrl: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
     model: process.env.DEEPSEEK_MODEL || "deepseek-v4-pro",
+    teachingModel: process.env.DEEPSEEK_TEACHING_MODEL || "deepseek-chat",
     timeoutMs: Number(process.env.DEEPSEEK_TIMEOUT_MS || 600000),
     maxTokens: Number(process.env.DEEPSEEK_MAX_TOKENS || 4000),
     teachingMaxTokens: Number(process.env.DEEPSEEK_TEACHING_MAX_TOKENS || 12000),

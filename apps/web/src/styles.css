@@ -40,6 +40,21 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.subtle-button {
+  min-height: 36px;
+  justify-self: start;
+  background: #f8fafc;
+  color: #475569;
+  border-color: #dbe4ee;
+  padding: 0 12px;
+}
+
+.subtle-button:hover:not(:disabled) {
+  background: #eef2ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+
 input {
   width: 100%;
   border: 1px solid #d7e1ef;

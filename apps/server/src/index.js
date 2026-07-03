@@ -33,6 +33,7 @@ import {
 import {
   fillOutlinePrompt,
   importExamPrompt,
+  importExamSelectionPrompt,
   teachingPagePrompt,
 } from "./prompts.js";
 import {
@@ -59,6 +60,8 @@ const app = express();
 const sharedDir = path.resolve(config.rootDir, "packages/shared/schemas");
 const RAW_PAGE_PLACEHOLDER = "未提取到文本内容，请检查 PDF 是否为扫描件";
 const EXAM_CANDIDATE_SCOPE_LIMIT = 150;
+const DEEPSEEK_SELECTION_CANDIDATE_LIMIT = 80;
+const DEEPSEEK_SELECTION_TARGET_COUNT = 20;
 const LOCAL_EXAM_CANDIDATE_QUERY_LIMIT = 500;
 const TEACHING_PAGE_QUESTION_LIMIT = 200;
 const MIN_NOTION_TEACHING_MARKDOWN_LENGTH = 80;
@@ -1215,6 +1218,21 @@ app.post("/api/chapters/:id/generate-all", requireTeacher, async (req, res) => {
   }
 });
 
+app.post("/api/chapters/:id/deepseek-generate-all", requireTeacher, async (req, res) => {
+  const completed = {};
+  try {
+    const chapter = mustChapter(req.params.id);
+    completed.outline = await runDeepSeekFillOutlineAgent(chapter);
+    const afterOutline = mustChapter(req.params.id);
+    completed.questions = await runDeepSeekImportExamAgent(afterOutline);
+    const afterQuestions = mustChapter(req.params.id);
+    completed.teaching = await runDeepSeekGenerateTeachingAgent(afterQuestions);
+    res.json({ ok: true, ...completed });
+  } catch (error) {
+    res.status(500).json({ error: error.message, ...completed });
+  }
+});
+
 app.post("/api/notion-agent/scan-triggers", requireTeacher, async (_req, res) => {
   try {
     const result = await scanNotionAgentTriggers();
@@ -1476,27 +1494,57 @@ async function runDeepSeekImportExamAgent(chapter, options = {}) {
         "未找到可用真题来源：历年真题库候选题为空，且当前章节没有关联类型为真题卷/试题/题库的原始资料",
       );
     }
-    const result = await runDeepSeekJson({
-      step: "deepseek-import-exam-questions",
-      schemaPath: path.join(sharedDir, "import-exam-questions.schema.json"),
-      prompt: importExamPrompt(context),
-    });
+    if (!context.examQuestionCandidates?.length) {
+      const result = {
+        selectedCandidateIds: [],
+        warnings: ["未找到可供 DeepSeek B 选择的稳定候选题"],
+        summary: "未入库：当前只有原始真题资料，没有可通过 candidateId 复用的候选题",
+      };
+      logStep(chapter.id, "deepseek-import-exam-questions", "success", "DeepSeek 未命中可入库真题", {
+        imported: 0,
+        skipped: 0,
+        examCandidateStats: context.examCandidateStats,
+        warnings: [...result.warnings, ...warnings],
+        summary: result.summary,
+      });
+      return { imported: 0, skipped: 0, result: { ...result, warnings: [...result.warnings, ...warnings] } };
+    }
+    let result;
+    try {
+      result = await runDeepSeekJson({
+        step: "deepseek-import-exam-questions",
+        schemaPath: path.join(sharedDir, "deepseek-import-exam-selection.schema.json"),
+        prompt: importExamSelectionPrompt(buildDeepSeekExamSelectionContext(context)),
+        maxTokens: 4000,
+      });
+    } catch (error) {
+      if (!isDeepSeekEmptyContentError(error)) throw error;
+      const fallbackIds = fallbackSelectExamCandidateIds(context.examQuestionCandidates);
+      result = {
+        selectedCandidateIds: fallbackIds,
+        warnings: [`DeepSeek 返回空内容，已使用后端候选排序兜底：${error.message}`],
+        summary: `DeepSeek 未返回内容，后端按候选排序选择 ${fallbackIds.length} 题`,
+      };
+    }
+    const supplementedSelection = supplementSelectedExamCandidateIds(
+      context.examQuestionCandidates,
+      result.selectedCandidateIds,
+    );
+    result = {
+      ...result,
+      selectedCandidateIds: supplementedSelection.selectedCandidateIds,
+      warnings: [...(result.warnings || []), ...supplementedSelection.warnings],
+    };
+    const resolvedSelection = resolveSelectedExamCandidates(
+      context.examQuestionCandidates,
+      result.selectedCandidateIds,
+    );
     let imported = 0;
     let skipped = 0;
     const notionWarnings = [];
-    for (const question of result.questions || []) {
-      const existingCandidate = findExamCandidate(context.examQuestionCandidates, question);
-      const exists = get(
-        `SELECT id FROM exam_questions
-         WHERE chapter_id = ? AND (stem = ? OR (source IS NOT NULL AND source = ?))`,
-        [chapter.id, question.stem, question.source],
-      );
-      if (exists) {
-        if (existingCandidate?.pageId && chapter.notion_page_id && notion) {
-          await safeNotionStep(notionWarnings, "关联已存在真题", () =>
-            linkExamQuestionToChapter(existingCandidate.pageId, chapter.notion_page_id),
-          );
-        }
+    for (const existingCandidate of resolvedSelection.candidates) {
+      const question = questionFromExamCandidate(existingCandidate);
+      if (!question.stem) {
         skipped++;
         continue;
       }
@@ -1509,10 +1557,6 @@ async function runDeepSeekImportExamAgent(chapter, options = {}) {
         if (!notionPage) {
           notionPage = { id: existingCandidate.pageId, url: existingCandidate.url || null };
         }
-      } else if (chapter.notion_page_id && notion) {
-        await safeNotionStep(notionWarnings, "新建 Notion 真题", async () => {
-          notionPage = await createExamQuestion(chapter.notion_page_id, question);
-        });
       }
       run(
         `INSERT INTO exam_questions
@@ -1526,7 +1570,7 @@ async function runDeepSeekImportExamAgent(chapter, options = {}) {
           question.answer,
           question.analysis,
           question.difficulty,
-          question.source,
+          uniqueDeepSeekExamQuestionSource(chapter.id, question.stem, question.source),
           question.year,
           JSON.stringify(question.knowledgeTags || []),
           notionPage?.id || null,
@@ -1541,7 +1585,7 @@ async function runDeepSeekImportExamAgent(chapter, options = {}) {
         updatePageCheckbox(options.clearTriggerPageId, ["入库"], false),
       );
     }
-    const finalWarnings = [...(result.warnings || []), ...notionWarnings, ...warnings];
+    const finalWarnings = [...(result.warnings || []), ...resolvedSelection.warnings, ...notionWarnings, ...warnings];
     logStep(
       chapter.id,
       "deepseek-import-exam-questions",
@@ -1560,7 +1604,7 @@ async function runDeepSeekImportExamAgent(chapter, options = {}) {
         options.commentPageId || options.clearTriggerPageId || chapter.notion_page_id,
         [
           "DeepSeek B 真题自动入库完成。",
-          `命中新增：${imported} 题；跳过重复：${skipped} 题。`,
+          `本轮插入：${imported} 题；无法入库：${skipped} 题。`,
           result.summary || "",
           finalWarnings.length ? `Warnings：${finalWarnings.join("；")}` : "",
         ].filter(Boolean).join("\n"),
@@ -1580,6 +1624,156 @@ async function runDeepSeekImportExamAgent(chapter, options = {}) {
     );
     throw error;
   }
+}
+
+function buildDeepSeekExamSelectionContext(context) {
+  const candidates = (context.examQuestionCandidatesForModel || [])
+    .slice(0, DEEPSEEK_SELECTION_CANDIDATE_LIMIT)
+    .map((candidate) => ({
+      candidateId: candidate.candidateId,
+      sourceKind: candidate.sourceKind || "",
+      sourceChapterTitle: candidate.sourceChapterTitle || "",
+      type: candidate.type || "",
+      stem: clipText(candidate.stem, 220),
+      year: candidate.year || "",
+      knowledgeTags: candidate.knowledgeTags || [],
+    }));
+  return {
+    chapter: {
+      id: context.chapter?.id,
+      title: context.chapter?.title,
+      chapter_no: context.chapter?.chapter_no,
+      section_no: context.chapter?.section_no,
+    },
+    outline: context.outline
+      ? {
+          new_outline_points: clipText(context.outline.new_outline_points, 1000),
+          key_points: clipText(context.outline.key_points, 800),
+          hard_points: clipText(context.outline.hard_points, 800),
+        }
+      : null,
+    notionOutlineFields: {
+      newOutlinePoints: clipText(context.notionOutlineFields?.newOutlinePoints, 1000),
+      keyPoints: clipText(context.notionOutlineFields?.keyPoints, 800),
+      hardPoints: clipText(context.notionOutlineFields?.hardPoints, 800),
+    },
+    examCandidateStats: context.examCandidateStats,
+    examQuestionCandidates: candidates,
+    note:
+      "只能从 examQuestionCandidates 中选择 candidateId；不要返回题干、选项、答案、解析等长文本。",
+  };
+}
+
+function isDeepSeekEmptyContentError(error) {
+  return String(error?.message || "").includes("DeepSeek 返回内容为空");
+}
+
+function fallbackSelectExamCandidateIds(candidates) {
+  const selected = [];
+  const seenTypes = new Set();
+  const seenIds = new Set();
+  const pool = (candidates || []).filter((candidate) => candidate?.candidateId);
+
+  for (const candidate of pool) {
+    const type = String(candidate.type || "").trim();
+    if (!type || seenTypes.has(type)) continue;
+    selected.push(candidate.candidateId);
+    seenTypes.add(type);
+    seenIds.add(candidate.candidateId);
+    if (selected.length >= DEEPSEEK_SELECTION_TARGET_COUNT) return selected;
+  }
+
+  for (const candidate of pool) {
+    if (seenIds.has(candidate.candidateId)) continue;
+    selected.push(candidate.candidateId);
+    seenIds.add(candidate.candidateId);
+    if (selected.length >= DEEPSEEK_SELECTION_TARGET_COUNT) return selected;
+  }
+
+  return selected;
+}
+
+function supplementSelectedExamCandidateIds(candidates, selectedCandidateIds) {
+  const candidateMap = new Map((candidates || []).map((candidate) => [candidate.candidateId, candidate]));
+  const selected = [];
+  const seen = new Set();
+  const warnings = [];
+  const ids = Array.isArray(selectedCandidateIds)
+    ? selectedCandidateIds.map((id) => String(id || "").trim()).filter(Boolean)
+    : [];
+
+  for (const candidateId of ids) {
+    if (seen.has(candidateId)) {
+      warnings.push(`重复候选 ID 已跳过：${candidateId}`);
+      continue;
+    }
+    const candidate = candidateMap.get(candidateId);
+    if (!candidate) {
+      warnings.push(`候选 ID 不存在，已跳过：${candidateId}`);
+      continue;
+    }
+    seen.add(candidateId);
+    selected.push(candidateId);
+    if (selected.length >= DEEPSEEK_SELECTION_TARGET_COUNT) {
+      if (ids.length > DEEPSEEK_SELECTION_TARGET_COUNT) {
+        warnings.push(`DeepSeek 返回 ${ids.length} 个候选 ID，本次只处理前 ${DEEPSEEK_SELECTION_TARGET_COUNT} 个有效候选`);
+      }
+      return { selectedCandidateIds: selected, warnings };
+    }
+  }
+
+  for (const candidate of candidates || []) {
+    if (!candidate?.candidateId || seen.has(candidate.candidateId)) continue;
+    selected.push(candidate.candidateId);
+    seen.add(candidate.candidateId);
+    if (selected.length >= DEEPSEEK_SELECTION_TARGET_COUNT) break;
+  }
+
+  if (selected.length > ids.length) {
+    warnings.push(`DeepSeek 返回 ${ids.length} 个有效候选，后端按候选排序补齐到 ${selected.length} 题`);
+  }
+  return { selectedCandidateIds: selected, warnings };
+}
+
+function resolveSelectedExamCandidates(candidates, selectedCandidateIds) {
+  const candidateMap = new Map((candidates || []).map((candidate) => [candidate.candidateId, candidate]));
+  const warnings = [];
+  const resolved = [];
+  const seen = new Set();
+  const ids = Array.isArray(selectedCandidateIds)
+    ? selectedCandidateIds.map((id) => String(id || "").trim()).filter(Boolean)
+    : [];
+  if (ids.length > DEEPSEEK_SELECTION_TARGET_COUNT) {
+    warnings.push(`DeepSeek 返回 ${ids.length} 个候选 ID，本次只处理前 ${DEEPSEEK_SELECTION_TARGET_COUNT} 个`);
+  }
+  for (const candidateId of ids.slice(0, DEEPSEEK_SELECTION_TARGET_COUNT)) {
+    if (seen.has(candidateId)) {
+      warnings.push(`重复候选 ID 已跳过：${candidateId}`);
+      continue;
+    }
+    seen.add(candidateId);
+    const candidate = candidateMap.get(candidateId);
+    if (!candidate) {
+      warnings.push(`候选 ID 不存在，已跳过：${candidateId}`);
+      continue;
+    }
+    resolved.push(candidate);
+  }
+  return { candidates: resolved, warnings };
+}
+
+function questionFromExamCandidate(candidate) {
+  return {
+    stem: String(candidate.stem || "").trim(),
+    type: String(candidate.type || "简答题").trim() || "简答题",
+    options: String(candidate.options || ""),
+    answer: String(candidate.answer || ""),
+    analysis: String(candidate.analysis || ""),
+    difficulty: ["易", "中", "难"].includes(candidate.difficulty) ? candidate.difficulty : "中",
+    source: String(candidate.source || `历年真题候选：${candidate.candidateId || ""}`).trim(),
+    year: String(candidate.year || ""),
+    knowledgeTags: Array.isArray(candidate.knowledgeTags) ? candidate.knowledgeTags : [],
+  };
 }
 
 async function importTeachingQuestions(chapter) {
@@ -2719,6 +2913,25 @@ function buildDuplicateRetainedSource(source) {
   return isDuplicateRetainedQuestion(value) ? value : `${value}（重复保留）`;
 }
 
+function uniqueDeepSeekExamQuestionSource(chapterId, stem, source) {
+  const baseSource = String(source || "DeepSeek 真题选题").trim();
+  if (!examQuestionSourceExists(chapterId, stem, baseSource)) return baseSource;
+  for (let index = 2; index < 1000; index++) {
+    const candidate = `${baseSource}（DeepSeek选题${index}）`;
+    if (!examQuestionSourceExists(chapterId, stem, candidate)) return candidate;
+  }
+  return `${baseSource}（DeepSeek选题${Date.now()}）`;
+}
+
+function examQuestionSourceExists(chapterId, stem, source) {
+  return Boolean(
+    get(
+      `SELECT id FROM exam_questions WHERE chapter_id = ? AND stem = ? AND source = ? LIMIT 1`,
+      [chapterId, stem, source],
+    ),
+  );
+}
+
 function isCorrectableTeachingQuestionField(field) {
   return ["stem", "type", "options", "answer", "analysis", "difficulty", "source", "year", "knowledge_tags_json"].includes(field);
 }
@@ -2749,11 +2962,13 @@ async function runGenerateTeachingAgent(chapter, options = {}) {
       prompt: teachingPagePrompt(context),
     });
     if (!result.markdown?.trim()) throw new Error("Codex 未返回教学页 Markdown");
-    const shapeWarnings = validateTeachingMarkdownShape(result.markdown);
+    const boundaryResult = ensureRealExamExerciseBoundaries(result.markdown);
+    const teachingMarkdown = boundaryResult.markdown;
+    const shapeWarnings = validateTeachingMarkdownShape(teachingMarkdown);
     let blockCount = 0;
     if (chapter.notion_page_id && notion) {
       await safeNotionStep(warnings, "追加教学页正文", async () => {
-        blockCount = await appendMarkdownToPage(chapter.notion_page_id, result.markdown);
+        blockCount = await appendMarkdownToPage(chapter.notion_page_id, teachingMarkdown);
       });
       await safeNotionStep(warnings, "更新章节状态", () =>
         setChapterStatus(chapter.notion_page_id, "已生成草稿"),
@@ -2770,7 +2985,8 @@ async function runGenerateTeachingAgent(chapter, options = {}) {
     }
     const finalResult = {
       ...result,
-      warnings: [...(result.warnings || []), ...shapeWarnings, ...warnings],
+      markdown: teachingMarkdown,
+      warnings: [...(result.warnings || []), ...boundaryResult.warnings, ...shapeWarnings, ...warnings],
     };
     const saved = run(
       `INSERT INTO teaching_pages
@@ -2778,7 +2994,7 @@ async function runGenerateTeachingAgent(chapter, options = {}) {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         chapter.id,
-        result.markdown,
+        teachingMarkdown,
         JSON.stringify(result.sourceSections || []),
         JSON.stringify(result.addedSections || []),
         JSON.stringify(finalResult.warnings),
@@ -2791,6 +3007,7 @@ async function runGenerateTeachingAgent(chapter, options = {}) {
       summary: result.summary,
       warnings: finalResult.warnings,
       shapeWarnings,
+      boundaryWarnings: boundaryResult.warnings,
       shapeCheck: {
         passed: shapeWarnings.length === 0,
         required: [
@@ -2849,13 +3066,16 @@ async function runDeepSeekGenerateTeachingAgent(chapter, options = {}) {
       schemaPath: path.join(sharedDir, "teaching-page.schema.json"),
       prompt: teachingPagePrompt(context),
       maxTokens: config.deepseek.teachingMaxTokens,
+      model: config.deepseek.teachingModel,
     });
     if (!result.markdown?.trim()) throw new Error("DeepSeek 未返回教学页 Markdown");
-    const shapeWarnings = validateTeachingMarkdownShape(result.markdown);
+    const boundaryResult = ensureRealExamExerciseBoundaries(result.markdown);
+    const teachingMarkdown = boundaryResult.markdown;
+    const shapeWarnings = validateTeachingMarkdownShape(teachingMarkdown);
     let blockCount = 0;
     if (chapter.notion_page_id && notion) {
       await safeNotionStep(warnings, "追加教学页正文", async () => {
-        blockCount = await appendMarkdownToPage(chapter.notion_page_id, result.markdown);
+        blockCount = await appendMarkdownToPage(chapter.notion_page_id, teachingMarkdown);
       });
       await safeNotionStep(warnings, "更新章节状态", () =>
         setChapterStatus(chapter.notion_page_id, "已生成草稿"),
@@ -2872,7 +3092,8 @@ async function runDeepSeekGenerateTeachingAgent(chapter, options = {}) {
     }
     const finalResult = {
       ...result,
-      warnings: [...(result.warnings || []), ...shapeWarnings, ...warnings],
+      markdown: teachingMarkdown,
+      warnings: [...(result.warnings || []), ...boundaryResult.warnings, ...shapeWarnings, ...warnings],
     };
     const saved = run(
       `INSERT INTO teaching_pages
@@ -2880,7 +3101,7 @@ async function runDeepSeekGenerateTeachingAgent(chapter, options = {}) {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         chapter.id,
-        result.markdown,
+        teachingMarkdown,
         JSON.stringify(result.sourceSections || []),
         JSON.stringify(result.addedSections || []),
         JSON.stringify(finalResult.warnings),
@@ -2893,6 +3114,7 @@ async function runDeepSeekGenerateTeachingAgent(chapter, options = {}) {
       summary: result.summary,
       warnings: finalResult.warnings,
       shapeWarnings,
+      boundaryWarnings: boundaryResult.warnings,
       shapeCheck: {
         passed: shapeWarnings.length === 0,
         required: [
@@ -2981,6 +3203,70 @@ function validateTeachingMarkdownShape(markdown) {
     warnings.push("存在疑似真题 details 折叠块未使用固定“答案与解析”summary");
   }
   return warnings;
+}
+
+function ensureRealExamExerciseBoundaries(markdown) {
+  const text = String(markdown || "");
+  const startLabel = "历年真题演练开始";
+  const endLabel = "历年真题演练结束";
+  const warnings = [];
+  if (text.includes(startLabel) && text.includes(endLabel)) {
+    return { markdown: text, warnings };
+  }
+
+  const lines = text.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => /历年真题演练|真题演练/.test(stripMarkdownInline(line)));
+  if (headingIndex < 0) {
+    const suffix = [
+      "",
+      "---",
+      "",
+      "### 🎯 历年真题演练",
+      "",
+      startLabel,
+      "",
+      "本节暂无已入库真题",
+      "",
+      endLabel,
+    ];
+    warnings.push("已自动补齐历年真题演练导入边界");
+    return { markdown: `${text.trimEnd()}\n${suffix.join("\n")}`, warnings };
+  }
+
+  const hasStart = lines.some((line) => line.trim() === startLabel);
+  const hasEnd = lines.some((line) => line.trim() === endLabel);
+  const nextSectionIndex = findRealExamBoundaryEndIndex(lines, headingIndex + 1);
+  const output = [...lines];
+
+  if (!hasEnd) {
+    output.splice(nextSectionIndex, 0, "", endLabel, "");
+  }
+  if (!hasStart) {
+    output.splice(headingIndex + 1, 0, "", startLabel, "");
+  }
+
+  warnings.push("已自动补齐历年真题演练导入边界");
+  return { markdown: output.join("\n").replace(/\n{4,}/g, "\n\n\n"), warnings };
+}
+
+function findRealExamBoundaryEndIndex(lines, startIndex) {
+  for (let index = startIndex; index < lines.length; index++) {
+    const normalized = stripMarkdownInline(lines[index]);
+    if (
+      /^#{1,3}\s+/.test(lines[index]) &&
+      /2026|新增题库|随堂练习|课堂小结|课后作业|下节预告|教师备课卡/.test(normalized)
+    ) {
+      return index;
+    }
+  }
+  return lines.length;
+}
+
+function stripMarkdownInline(value) {
+  return String(value || "")
+    .replace(/^[#>\-\s*`]+/, "")
+    .replace(/[*_`~]/g, "")
+    .trim();
 }
 
 function hasLooseMarkdownTable(markdown) {
@@ -4019,9 +4305,17 @@ async function buildExamContext(chapter) {
     keyPoints: propValue(notionChapter, "重点"),
     hardPoints: propValue(notionChapter, "难点"),
   };
-  const localExamQuestionCandidates = queryLocalExamQuestionCandidates(chapter.id);
+  const relatedCandidates = addExamCandidateIds(relatedExamPages, "related");
+  const notionCandidates = addExamCandidateIds(examQuestionCandidates, "notion");
+  const localExamQuestionCandidates = addExamCandidateIds(queryLocalExamQuestionCandidates(chapter.id), "local");
+  const scopedRelatedCandidates = rankExamCandidatesForChapter(
+    relatedCandidates,
+    chapter,
+    latestOutline,
+    notionOutlineFields,
+  );
   const scopedNotionCandidates = rankExamCandidatesForChapter(
-    examQuestionCandidates,
+    notionCandidates,
     chapter,
     latestOutline,
     notionOutlineFields,
@@ -4033,11 +4327,25 @@ async function buildExamContext(chapter) {
     notionOutlineFields,
   );
   const scopedCandidates = rankExamCandidatesForChapter(
-    mergeExamQuestionCandidates(scopedNotionCandidates, scopedLocalCandidates),
+    mergeExamQuestionCandidates(scopedRelatedCandidates, scopedNotionCandidates, scopedLocalCandidates),
     chapter,
     latestOutline,
     notionOutlineFields,
   );
+  const examQuestionCandidatesForModel = scopedCandidates.map((candidate) => ({
+    candidateId: candidate.candidateId,
+    sourceKind: candidate.sourceKind || "",
+    sourceChapterTitle: candidate.sourceChapterTitle || "",
+    type: candidate.type || "",
+    stem: clipText(candidate.stem, 240),
+    options: clipText(candidate.options, 220),
+    answer: clipText(candidate.answer, 80),
+    analysis: clipText(candidate.analysis, 180),
+    difficulty: candidate.difficulty || "",
+    source: clipText(candidate.source, 160),
+    year: candidate.year || "",
+    knowledgeTags: candidate.knowledgeTags || [],
+  }));
   return {
     chapter,
     outline: latestOutline,
@@ -4045,9 +4353,12 @@ async function buildExamContext(chapter) {
     rawPages: rawTexts,
     relatedExamPages,
     examQuestionCandidates: scopedCandidates,
+    examQuestionCandidatesForModel,
     examCandidateStats: {
       total: examQuestionCandidates.length + localExamQuestionCandidates.length,
       scoped: scopedCandidates.length,
+      relatedTotal: relatedCandidates.length,
+      relatedScoped: scopedRelatedCandidates.length,
       notionTotal: examQuestionCandidates.length,
       notionScoped: scopedNotionCandidates.length,
       localTotal: localExamQuestionCandidates.length,
@@ -4057,7 +4368,7 @@ async function buildExamContext(chapter) {
     examSourcePages,
     warnings,
     note:
-      "优先从 examQuestionCandidates 历年真题库候选题中筛选本章节相关题；examQuestionCandidates 已经过后端关键词预筛选，来源包括 Notion 真题库和本地 SQLite 已沉淀题库。若 examSourcePages 提供真题卷正文或文件，也可从其中抽题。已有 pageId 或 localQuestionId 的候选题不要改写题干和选项。",
+      "DeepSeek B 只允许从 examQuestionCandidatesForModel 中选择 candidateId；后端会按 candidateId 从完整 examQuestionCandidates 复制原题入库，避免模型返回长题干导致非法 JSON。",
   };
 }
 
@@ -4067,6 +4378,21 @@ function hasExamSources(context) {
       context.examQuestionCandidates?.length ||
       context.examSourcePages?.some((page) => String(page.markdown || "").trim()),
   );
+}
+
+function addExamCandidateIds(candidates, fallbackKind) {
+  return (candidates || [])
+    .map((candidate) => {
+      const candidateId = examCandidateId(candidate, fallbackKind);
+      return candidateId ? { ...candidate, candidateId } : null;
+    })
+    .filter(Boolean);
+}
+
+function examCandidateId(candidate, fallbackKind) {
+  if (candidate?.localQuestionId) return `local:${candidate.localQuestionId}`;
+  if (candidate?.pageId) return `notion:${candidate.pageId}`;
+  return "";
 }
 
 function queryLocalExamQuestionCandidates(chapterId) {
@@ -4103,7 +4429,9 @@ function mergeExamQuestionCandidates(...groups) {
   const seen = new Set();
   for (const candidate of groups.flat()) {
     if (!candidate?.stem) continue;
-    const key = candidate.pageId
+    const key = candidate.candidateId
+      ? `candidate:${candidate.candidateId}`
+      : candidate.pageId
       ? `page:${candidate.pageId}`
       : `text:${normalizeText(candidate.stem)}:${normalizeText(candidate.source)}`;
     if (seen.has(key)) continue;

@@ -32,6 +32,25 @@ export function importExamPrompt(context) {
 ${JSON.stringify(context, null, 2)}`;
 }
 
+export function importExamSelectionPrompt(context) {
+  return `你是专升本《计算机应用基础》真题选题助手。请基于章节范围，从 examQuestionCandidates 中选择最适合当前章节的已有真题。
+
+要求：
+1. 只从 examQuestionCandidates 中选择题目，不得编造新题，不得从 examSourcePages 中抽取新题。
+2. 只返回 selectedCandidateIds、warnings、summary 三个字段；selectedCandidateIds 只能填写候选题中的 candidateId。
+3. 不得返回题干、选项、答案、解析、source、year、knowledgeTags 等长文本字段。
+4. 目标选择 20 个 candidateId；如果候选不足或质量不足，可以少于 20 个，但不要超过 20 个。
+5. 不强制题型比例，总数和考点覆盖优先；若某题型候选质量更高，可以多选该题型。
+6. 必须按 Notion AI 5 步选题法筛选：锚定考纲关键词、完整阅读候选题库、排除相邻章节、判定边界题、形成课堂讲评题组。
+7. 优先覆盖本节四条主线：指令与工作过程、硬件、存储器、软件系统。
+8. 先做排除：计算机发展史、第一台计算机、应用领域归计算机概述；进制转换、ASCII、位/字节换算归数据表示；Windows、Office、网络、安全类题归对应后续章节。
+9. 边界题宁缺毋滥：只考存储单位换算的题不选；考 ROM/RAM 断电特性、存储器分类、CPU/总线/Cache/系统软件/多媒体核心概念的题可选。
+10. summary 用一句话说明最终选题数量和覆盖主线，例如“共选 20 题，覆盖指令执行、硬件组成、存储器、软件系统”，不输出完整推理过程。
+
+上下文：
+${JSON.stringify(context, null, 2)}`;
+}
+
 export function teachingPagePrompt(context) {
   return `你是专升本《计算机应用基础》章节教学页生成助手。请完成 C：生成章节教学页。
 
@@ -57,6 +76,7 @@ export function teachingPagePrompt(context) {
 9. Markdown 表格必须独立成块，表格前后都留空行；不要把表格放进 callout、columns 或 details 内部。
 10. 知识结构图必须使用标准 fenced code block：第一行只能是 \`\`\`mermaid，最后一行只能是 \`\`\`，不能用全角符号、缩进代码块或把反引号写成正文。
 11. <columns> 必须只用于双栏重点难点等短内容，格式必须严格闭合：<columns>、<column>、</column>、<column>、</column>、</columns>，不能漏闭合标签。
+12. “历年真题演练”区域必须包含导入边界：在第一道真题或题型标题之前单独一行写“历年真题演练开始”，在最后一道真题和答案解析之后单独一行写“历年真题演练结束”；两个边界不得放入 callout、details、表格、代码块或列表。
 
 样例页效果目标：
 1. 开头像 Notion Agent 样例页一样先用彩色 callout 呈现“本节学习目标”，不是普通段落。
@@ -72,7 +92,7 @@ export function teachingPagePrompt(context) {
 4. ### 🗺️ 本节知识结构：优先使用 Mermaid graph；如果无法画图，用清晰层级列表。
 5. ### ⭐ 本节重点 vs ⚠️ 难点对照：优先用 <columns> 双栏，每栏一个彩色 callout。
 6. 按原始课件小节顺序逐小节展开：原小节标题原样保留，每个主要小节至少包含讲稿口播、课堂提问或板书重点之一
-7. ### 🎯 历年真题演练：按单选题、多选题、判断题、简答题、操作题分组；如果 questions 为空，写明“本节暂无已入库真题”，不要编造。
+7. ### 🎯 历年真题演练：按单选题、多选题、判断题、简答题、操作题分组；必须用“历年真题演练开始”和“历年真题演练结束”包住本区域题目；如果 questions 为空，也保留两个边界并在中间写明“本节暂无已入库真题”，不要编造。
 8. ### 🆕 2026 新增题库：若上下文没有 2026 题库，只写“本节暂无可确认的 2026 新增题库”，不要编题。
 9. ### 📝 随堂练习（分层例题）：基础题 / 变式题 / 拓展题，含参考答案折叠。
 10. ### 📒 课堂小结：用红色或橙色 callout 总结口诀、易错红线。
@@ -107,6 +127,7 @@ export function teachingPagePrompt(context) {
 考点归属：...
 </details>
 4. 可归入原小节的真题优先放到对应小节；无法对位的放到末尾“历年真题演练”。
+5. 末尾“历年真题演练”必须保留纯文本独立行边界：历年真题演练开始 / 历年真题演练结束，供后续导入当前章节习题时按区间解析。
 
 教学法增强：
 1. 每个主要小节至少出现一处：讲稿口播、课堂提问、板书/重点标注、导入案例或分层例题。
