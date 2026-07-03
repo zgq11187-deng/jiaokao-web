@@ -824,6 +824,21 @@ pre {
   line-height: 1.75;
 }
 
+.markdown-preview .md-sup,
+.markdown-preview .md-sub {
+  font-size: 0.72em;
+  line-height: 0;
+  white-space: nowrap;
+}
+
+.markdown-preview .md-sup {
+  vertical-align: super;
+}
+
+.markdown-preview .md-sub {
+  vertical-align: sub;
+}
+
 .markdown-preview ul {
   margin: 10px 0 10px 22px;
   padding: 0;

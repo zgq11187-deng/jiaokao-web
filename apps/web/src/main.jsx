@@ -3496,25 +3496,70 @@ function renderInline(text) {
     /<mark\s+color="([^"]+)">([\s\S]*?)<\/mark>|<span\s+color="([^"]+)">([\s\S]*?)<\/span>|\*\*([^*]+)\*\*/gi;
   let lastIndex = 0;
   let key = 0;
+  const value = String(text || "");
   for (const match of String(text || "").matchAll(pattern)) {
     if (match.index > lastIndex) {
-      nodes.push(String(text).slice(lastIndex, match.index));
+      nodes.push(...renderMathInline(value.slice(lastIndex, match.index), `txt-${key++}`));
     }
     if (match[1] || match[3]) {
       nodes.push(
         <mark key={`mark-${key++}`} className={toToneClass(match[1] || match[3])}>
-          {match[2] || match[4]}
+          {renderMathInline(match[2] || match[4], `mark-${key}`)}
         </mark>,
       );
     } else {
-      nodes.push(<strong key={`strong-${key++}`}>{match[5]}</strong>);
+      nodes.push(<strong key={`strong-${key++}`}>{renderMathInline(match[5], `strong-${key}`)}</strong>);
     }
     lastIndex = match.index + match[0].length;
   }
-  if (lastIndex < String(text).length) {
-    nodes.push(String(text).slice(lastIndex));
+  if (lastIndex < value.length) {
+    nodes.push(...renderMathInline(value.slice(lastIndex), `txt-${key++}`));
   }
   return nodes;
+}
+
+function renderMathInline(text, keyPrefix = "math") {
+  const value = String(text || "");
+  const nodes = [];
+  const exponent = String.raw`\{(?:[+\-−]?\d+|[A-Za-z])\}|[+\-−]?\d+|[A-Za-z]`;
+  const subscript = String.raw`\{[+\-−]?\d+\}|[+\-−]?\d`;
+  const pattern = new RegExp(String.raw`\\times|\^(${exponent})|_(${subscript})`, "g");
+  let lastIndex = 0;
+  let key = 0;
+
+  for (const match of value.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    const marker = match[0][0];
+    if ((marker === "^" || marker === "_") && !/[A-Za-z0-9)]/.test(value[index - 1] || "")) {
+      continue;
+    }
+    if (index > lastIndex) nodes.push(value.slice(lastIndex, index));
+    if (match[0] === "\\times") {
+      nodes.push("×");
+    } else if (marker === "^") {
+      nodes.push(
+        <sup key={`${keyPrefix}-sup-${key++}`} className="md-sup">
+          {stripMathBraces(match[1])}
+        </sup>,
+      );
+    } else {
+      nodes.push(
+        <sub key={`${keyPrefix}-sub-${key++}`} className="md-sub">
+          {stripMathBraces(match[2])}
+        </sub>,
+      );
+    }
+    lastIndex = index + match[0].length;
+  }
+  if (lastIndex < value.length) nodes.push(value.slice(lastIndex));
+  return nodes;
+}
+
+function stripMathBraces(value) {
+  return String(value || "")
+    .replace(/^\{/, "")
+    .replace(/\}$/, "")
+    .replace(/−/g, "-");
 }
 
 function parseQuestionOptions(options) {
