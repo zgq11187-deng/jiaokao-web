@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   BookOpen,
@@ -30,6 +30,22 @@ import featureTeaching from "./assets/trial-features/teaching.png";
 import featureWrongQuestions from "./assets/trial-features/wrong-questions.png";
 
 const API = "";
+let mermaidPromise = null;
+
+function loadMermaid() {
+  if (!mermaidPromise) {
+    mermaidPromise = import("mermaid").then((module) => {
+      const mermaid = module.default;
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        theme: "default",
+      });
+      return mermaid;
+    });
+  }
+  return mermaidPromise;
+}
 
 const emptyAuthForm = {
   name: "",
@@ -2045,7 +2061,7 @@ function TeacherWorkspace(props) {
               </button>
             </FlowCard>
 
-            <FlowCard index="2" title="DeepSeek Agent A/B/C" icon={<Layers size={18} />}>
+            <FlowCard index="2" title="Codex Agent A/B/C" icon={<Layers size={18} />}>
               <button onClick={() => runStep("fill-outline", "A 自动填充考点")} disabled={Boolean(busy)}>
                 A 自动填充考点
               </button>
@@ -2055,6 +2071,28 @@ function TeacherWorkspace(props) {
               <button onClick={() => runStep("generate-teaching-page", "C 生成教学页")} disabled={Boolean(busy)}>
                 C 生成教学页
               </button>
+              <button className="primary" onClick={() => runStep("generate-all", "A/B/C 串联生成")} disabled={Boolean(busy)}>
+                <Sparkles size={16} /> 一键执行 Codex A/B/C
+              </button>
+            </FlowCard>
+
+            <FlowCard index="3" title="DeepSeek Agent A/B/C" icon={<Layers size={18} />}>
+              <p className="muted">已接入 DeepSeek A/B/C；一键执行后续实现。</p>
+              <button onClick={() => runStep("deepseek-fill-outline", "DeepSeek A 自动填充考点")} disabled={Boolean(busy)}>
+                A 自动填充考点
+              </button>
+              <button onClick={() => runStep("deepseek-import-exam-questions", "DeepSeek B 真题自动入库")} disabled={Boolean(busy)}>
+                B 真题自动入库
+              </button>
+              <button onClick={() => runStep("deepseek-generate-teaching-page", "DeepSeek C 生成教学页")} disabled={Boolean(busy)}>
+                C 生成教学页
+              </button>
+              <button className="primary" disabled>
+                <Sparkles size={16} /> 一键执行 DeepSeek A/B/C
+              </button>
+            </FlowCard>
+
+            <FlowCard index="4" title="章节题库与教学页管理" icon={<ClipboardList size={18} />}>
               <button onClick={syncCurrentTeachingPageFromNotion} disabled={Boolean(busy)}>
                 <RefreshCw size={16} /> 同步当前章节教学页
               </button>
@@ -2073,15 +2111,15 @@ function TeacherWorkspace(props) {
               <button onClick={cleanupDuplicateQuestions} disabled={Boolean(busy)}>
                 <ClipboardList size={16} /> 清理当前章节重复题
               </button>
-              <button className="primary" onClick={() => runStep("generate-all", "A/B/C 串联生成")} disabled={Boolean(busy)}>
-                <Sparkles size={16} /> 一键执行 A/B/C
-              </button>
+            </FlowCard>
+
+            <FlowCard index="5" title="Notion 自动化" icon={<RefreshCw size={18} />}>
               <button onClick={scanNotionTriggers} disabled={Boolean(busy)}>
                 <RefreshCw size={16} /> 扫描 Notion 触发项
               </button>
             </FlowCard>
 
-            <FlowCard index="3" title="导出" icon={<Download size={18} />}>
+            <FlowCard index="6" title="导出" icon={<Download size={18} />}>
               <button onClick={() => exportFile("ppt")}>导出演示 PPT</button>
               <button onClick={() => exportFile("site")}>导出教学网页</button>
               <button onClick={() => exportFile("question-bank")}>导出章节题库</button>
@@ -2113,6 +2151,58 @@ function TeacherWorkspace(props) {
 
 const questionTypes = ["单选题", "多选题", "判断题", "简答题", "操作题"];
 const difficultyOptions = ["易", "中", "难"];
+const questionSourceOrder = ["real_exam", "mock_exam", "manual"];
+const questionSourceLabels = {
+  real_exam: "历年真题",
+  mock_exam: "模拟题",
+  manual: "补充练习",
+};
+
+function questionSourceKindLabel(kind) {
+  return questionSourceLabels[kind] || questionSourceLabels.real_exam;
+}
+
+function inferClientQuestionSourceKind(question = {}) {
+  if (question.question_source_kind && questionSourceLabels[question.question_source_kind]) {
+    return question.question_source_kind;
+  }
+  const source = String(question.source || "");
+  const year = String(question.year || "");
+  if (source.includes("模拟题") || year === "模拟") return "mock_exam";
+  if (source.includes("手动题") || source.includes("自编题") || year === "自编") return "manual";
+  return "real_exam";
+}
+
+function buildQuestionGroups(questions = []) {
+  const groups = questionSourceOrder.map((key) => ({
+    key,
+    label: questionSourceKindLabel(key),
+    questions: [],
+  }));
+  const groupMap = new Map(groups.map((group) => [group.key, group]));
+
+  questions.forEach((question) => {
+    const kind = inferClientQuestionSourceKind(question);
+    const group = groupMap.get(kind) || groupMap.get("real_exam");
+    group.questions.push(question);
+  });
+
+  return groups
+    .map((group) => {
+      const typeGroups = questionTypes
+        .map((type) => ({
+          type,
+          questions: group.questions.filter((question) => (question.type || "简答题") === type),
+        }))
+        .filter((item) => item.questions.length);
+      return {
+        ...group,
+        count: group.questions.length,
+        typeGroups,
+      };
+    })
+    .filter((group) => group.count);
+}
 
 function formatTeachingQuestionImportNotice(data = {}) {
   const stats = data.byType || {};
@@ -2191,6 +2281,7 @@ function TeacherQuestionManager({
   const activeQuestions = questions.filter((question) => !question.is_archived);
   const archivedQuestions = questions.filter((question) => question.is_archived);
   const visibleQuestions = showArchived ? questions : activeQuestions;
+  const groupedQuestions = buildQuestionGroups(visibleQuestions);
 
   async function submitNewQuestion(event) {
     event.preventDefault();
@@ -2293,8 +2384,20 @@ function TeacherQuestionManager({
 
       <div className="question-editor-list">
         {visibleQuestions.length ? (
-          visibleQuestions.map((question) => (
-            <article key={question.id} className={question.is_archived ? "question-editor archived" : "question-editor"}>
+          groupedQuestions.map((sourceGroup) => (
+            <section key={sourceGroup.key} className="question-source-section">
+              <div className="question-source-title">
+                <h4>{sourceGroup.label}</h4>
+                <span>{sourceGroup.count} 题</span>
+              </div>
+              {sourceGroup.typeGroups.map((typeGroup) => (
+                <div key={`${sourceGroup.key}-${typeGroup.type}`} className="question-type-section">
+                  <div className="question-type-title">
+                    <strong>{typeGroup.type}</strong>
+                    <span>{typeGroup.questions.length} 题</span>
+                  </div>
+                  {typeGroup.questions.map((question) => (
+                    <article key={question.id} className={question.is_archived ? "question-editor archived" : "question-editor"}>
               {editingId === question.id ? (
                 <form className="question-edit-form" onSubmit={(event) => saveQuestion(event, question.id)}>
                   <div className="question-form-grid">
@@ -2366,6 +2469,7 @@ function TeacherQuestionManager({
                     <div className="question-meta">
                       <span>{question.id}</span>
                       <strong>{question.type || "题目"}</strong>
+                      <em>{questionSourceKindLabel(question.question_source_kind)}</em>
                       {question.is_archived ? <em>已隐藏</em> : null}
                       {question.answer ? <em>答案：{question.answer}</em> : <em>答案待补充</em>}
                       {question.source ? <em>{question.source}</em> : null}
@@ -2390,7 +2494,11 @@ function TeacherQuestionManager({
                   <p>解析：{question.analysis || "暂无解析"}</p>
                 </>
               )}
-            </article>
+                    </article>
+                  ))}
+                </div>
+              ))}
+            </section>
           ))
         ) : (
           <div className="empty">当前章节还没有题目。可先导入当前章节习题，或手动新增。</div>
@@ -2425,6 +2533,7 @@ function StudentWorkspace({
   const [studentError, setStudentError] = useState("");
 
   const questions = detail?.questions || [];
+  const groupedPracticeQuestions = buildQuestionGroups(questions);
   const outline = detail?.outlines?.[0] || null;
   const practiceQuestions = questions;
 
@@ -2591,19 +2700,35 @@ function StudentWorkspace({
             <span className="pill">{practiceQuestions.length} 题</span>
           </div>
           {practiceQuestions.length ? (
-            practiceQuestions.map((question, index) => (
-              <QuestionCard
-                key={question.id}
-                question={question}
-                index={index + 1}
-                value={answers[question.id] || ""}
-                onChange={(value) =>
-                  setAnswers((current) => ({ ...current, [question.id]: value }))
-                }
-                result={practiceResults[question.id]}
-                onSubmit={() => submitPractice(question)}
-                disabled={Boolean(busy || studentBusy)}
-              />
+            groupedPracticeQuestions.map((sourceGroup) => (
+              <section key={sourceGroup.key} className="student-question-source-section">
+                <div className="question-source-title">
+                  <h3>{sourceGroup.label}</h3>
+                  <span>{sourceGroup.count} 题</span>
+                </div>
+                {sourceGroup.typeGroups.map((typeGroup) => (
+                  <div key={`${sourceGroup.key}-${typeGroup.type}`} className="student-question-type-section">
+                    <div className="question-type-title">
+                      <strong>{typeGroup.type}</strong>
+                      <span>{typeGroup.questions.length} 题</span>
+                    </div>
+                    {typeGroup.questions.map((question, index) => (
+                      <QuestionCard
+                        key={question.id}
+                        question={question}
+                        index={index + 1}
+                        value={answers[question.id] || ""}
+                        onChange={(value) =>
+                          setAnswers((current) => ({ ...current, [question.id]: value }))
+                        }
+                        result={practiceResults[question.id]}
+                        onSubmit={() => submitPractice(question)}
+                        disabled={Boolean(busy || studentBusy)}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </section>
             ))
           ) : (
             <div className="empty">本章还没有题目。老师完成 B 真题自动入库后即可练习。</div>
@@ -2803,6 +2928,7 @@ function QuestionCard({
       <div className="question-meta">
         <span>{String(index).padStart(2, "0")}</span>
         <strong>{question.type || "题目"}</strong>
+        <em>{questionSourceKindLabel(inferClientQuestionSourceKind(question))}</em>
         {question.year ? <em>{question.year}</em> : null}
         {question.source ? <em>{question.source}</em> : null}
       </div>
@@ -3003,11 +3129,15 @@ function renderMarkdownBlocks(markdown) {
     if (/^```/.test(line.trim())) {
       flushParagraph(`p-${index}`);
       const parsed = collectCodeBlock(lines, index);
-      blocks.push(
-        <pre key={`code-${index}`} className={parsed.lang === "mermaid" ? "md-mermaid" : ""}>
-          <code>{parsed.body.join("\n")}</code>
-        </pre>,
-      );
+      if (parsed.lang === "mermaid") {
+        blocks.push(<MermaidDiagram key={`mermaid-${index}`} chart={parsed.body.join("\n")} />);
+      } else {
+        blocks.push(
+          <pre key={`code-${index}`}>
+            <code>{parsed.body.join("\n")}</code>
+          </pre>,
+        );
+      }
       index = parsed.endIndex;
       continue;
     }
@@ -3097,6 +3227,61 @@ function renderMarkdownBlocks(markdown) {
   }
   flushParagraph("p-final");
   return blocks;
+}
+
+function MermaidDiagram({ chart }) {
+  const idRef = useRef(`mermaid-${Math.random().toString(36).slice(2)}`);
+  const [svg, setSvg] = useState("");
+  const [error, setError] = useState("");
+  const normalizedChart = String(chart || "").trim();
+
+  useEffect(() => {
+    let cancelled = false;
+    setSvg("");
+    setError("");
+
+    if (!normalizedChart) {
+      setError("导图内容为空");
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    loadMermaid()
+      .then((mermaid) => mermaid.render(`${idRef.current}-${Date.now()}`, normalizedChart))
+      .then(({ svg: renderedSvg }) => {
+        if (!cancelled) setSvg(renderedSvg);
+      })
+      .catch((renderError) => {
+        if (!cancelled) setError(renderError?.message || "Mermaid 语法错误");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [normalizedChart]);
+
+  if (svg) {
+    return (
+      <div className="md-mermaid-diagram">
+        <div className="md-mermaid-svg" dangerouslySetInnerHTML={{ __html: svg }} />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="md-mermaid-diagram error">
+        <strong>导图渲染失败，请检查 Mermaid 语法。</strong>
+        <p>{error}</p>
+        <pre>
+          <code>{normalizedChart}</code>
+        </pre>
+      </div>
+    );
+  }
+
+  return <div className="md-mermaid-diagram loading">正在渲染导图...</div>;
 }
 
 function isMarkdownTableStart(lines, index) {
