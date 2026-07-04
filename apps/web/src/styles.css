@@ -884,18 +884,24 @@ pre {
 .md-mermaid-diagram {
   margin: 16px 0;
   padding: 16px;
+  width: 100%;
+  max-width: 100%;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   border: 1px solid #dbe4ee;
   border-radius: 8px;
   background: #fff;
 }
 
 .md-mermaid-svg {
+  width: max-content;
   min-width: 560px;
 }
 
 .md-mermaid-svg svg {
   display: block;
+  width: auto;
+  height: auto;
   max-width: none;
   margin: 0 auto;
 }
@@ -916,9 +922,19 @@ pre {
 }
 
 .md-mermaid-diagram.error pre {
+  overflow-x: auto;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
   background: #fff;
   color: #162033;
   border: 1px solid #fecaca;
+}
+
+.md-mermaid-diagram.error code {
+  white-space: inherit;
+  word-break: inherit;
+  overflow-wrap: inherit;
 }
 
 .md-columns {
@@ -2090,6 +2106,18 @@ pre {
   .markdown-preview {
     padding: 14px;
     max-height: none;
+  }
+
+  .md-mermaid-diagram {
+    padding: 12px;
+  }
+
+  .md-mermaid-svg {
+    min-width: 520px;
+  }
+
+  .md-mermaid-diagram.error pre {
+    max-width: none;
   }
 
   .question-card h3 {
