@@ -32,6 +32,21 @@ export const config = {
       process.env.QWEN_VISION_MODEL ||
       "qwen3-vl-flash",
   },
+  mockAnalysis: {
+    provider: process.env.MOCK_ANALYSIS_PROVIDER || "codex-luna",
+    codexLuna: {
+      apiKey: process.env.CODEX_LUNA_API_KEY || "",
+      baseUrl: process.env.CODEX_LUNA_BASE_URL || "https://api.openai.com/v1",
+      model: process.env.CODEX_LUNA_MODEL || "gpt-5.6-luna",
+      timeoutMs: Number(process.env.CODEX_LUNA_TIMEOUT_MS || 12000),
+    },
+    deepseek: {
+      apiKey: process.env.DEEPSEEK_ANALYSIS_API_KEY || "",
+      baseUrl: process.env.DEEPSEEK_ANALYSIS_BASE_URL || "https://api.deepseek.com",
+      model: process.env.DEEPSEEK_ANALYSIS_MODEL || "deepseek-chat",
+      timeoutMs: Number(process.env.DEEPSEEK_ANALYSIS_TIMEOUT_MS || 12000),
+    },
+  },
   codex: {
     bin:
       process.env.CODEX_BIN ||
