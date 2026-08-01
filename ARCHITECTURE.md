@@ -2,7 +2,7 @@
 
 ## 1. 架构定位
 
-教考智联工作台第一版采用本地优先的 Web 工作台架构：React + Vite 前端、Express 后端、SQLite 本地数据库、Notion 作为课程资料与教学页同步目标，Qwen 负责图片/文档到 Markdown 的原始页生成，Codex Agent 负责 A/B/C 教学内容生成流程。
+教考智联工作台第一版采用本地优先的 Web 工作台架构：React + Vite 前端、Express 后端、SQLite 本地数据库、Notion 作为课程资料与教学页同步目标，Qwen 负责图片/文档到 Markdown 的原始页生成，Codex Agent 负责 A/B/C 教学内容生成流程，DeepSeek Agent 先接入 A 自动填充考点作为国产大模型改造入口。
 
 这个项目不是纯静态课程网站，也不是营销落地页。它需要文件上传、AI 调用、Notion 写入、SQLite 持久化、登录授权、练习记录和导出能力，因此保留现有 `apps/web` + `apps/server` + `packages/shared` monorepo 结构。
 
@@ -16,6 +16,7 @@
 - Styling：Tailwind CSS
 - UI：shadcn/ui + Radix UI
 - Icons：lucide-react
+- Markdown diagram rendering：mermaid，用于老师端、学生端和公开试用页的教学页预览
 
 理由：当前项目已经使用 React + Vite，并且界面属于工作台型应用。Vite 足够轻，适合本地开发和内网部署；shadcn/ui + Radix UI 与 DESIGN.md 中的表单、弹窗、Tabs、Toast、Dropdown、表格、授权审核列表和流程状态卡匹配。
 
@@ -75,7 +76,7 @@ project/
 
 现有核心表：
 
-- `chapters`：章节，包含 `student_visible` 控制是否对所有学生开放
+- `chapters`：章节，包含 `notion_archived` 与 `student_visible` 两个独立状态。`notion_archived` 记录关联 Notion 页面是否仍有效；`student_visible` 只控制是否对所有学生开放。
 - `chapter_student_access`：章节到学生的指定授权关系（PK = chapter_id + student_id），用于在未对所有学生开放时按学生粒度授权
 - `raw_pages`：Qwen 生成的 Markdown 原始页
 - `outline_analyses`：A 自动填充考点结果
@@ -135,9 +136,9 @@ project/
 
 主要 API 分组：
 
-- `GET /api/chapters`：章节列表；老师返回全部本地章节，学生只返回对自己可见的章节（`student_visible = 1` 或在 `chapter_student_access` 中有授权）
+- `GET /api/chapters`：章节列表；老师可取得全部本地章节，老师端默认隐藏 `notion_archived = 1` 且可主动显示；学生只返回未归档且对自己可见的章节（`student_visible = 1` 或在 `chapter_student_access` 中有授权）
 - `GET /api/chapters/:id`：章节详情
-- `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；只同步章节元数据，Notion 已删除章节先对所有学生隐藏（保留 per-student 授权），不读取页面正文，不导入习题
+- `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；完整分页后排除回收站和已归档页面，并对账本地 Notion 来源章节。失效页面设为 `notion_archived = 1`、关闭 `student_visible`、保留指定学生授权和全部历史数据；恢复页面只清除归档状态并更新元数据，不自动重新开放给学生。接口返回新增、更新、归档、恢复、保留和跳过无效页面统计。
 - `POST /api/teacher/chapters/:id/sync-teaching-page-from-notion`：老师手动同步当前章节 Notion 页面正文到本地教学页缓存
 - `POST /api/teacher/chapters/:id/show-to-students`：老师将章节开放给所有学生
 - `POST /api/teacher/chapters/:id/hide-from-students`：老师关闭对所有学生的开放（不影响指定学生授权）
@@ -146,7 +147,9 @@ project/
 - `POST /api/teacher/chapters/:id/student-access/:studentId/revoke`：老师取消指定学生对当前章节的访问权限
 - `POST /api/chapters/:id/raw-pages/from-file`：上传文件并用 Qwen 生成原始页
 - `POST /api/chapters/:id/fill-outline`：Codex Agent A 自动填充考点
-- `POST /api/chapters/:id/import-exam-questions`：Codex Agent B 真题入库
+- `POST /api/chapters/:id/deepseek-fill-outline`：DeepSeek Agent A 自动填充考点，复用 Codex A 的上下文、prompt、schema、Notion 写回和 SQLite 日志落点
+- `POST /api/chapters/:id/import-exam-questions`：Codex Agent B 真题入库；候选题来源包括 Notion 真题库、章节关联真题、真题原始资料和本地 SQLite 已沉淀题库
+- `POST /api/chapters/:id/deepseek-import-exam-questions`：DeepSeek Agent B 真题入库，只让模型读取精简候选并返回最多 20 个候选题 `candidateId` 和摘要，后端再从 Notion / SQLite 候选题复制原题入库，避免长题干造成非法 JSON；DeepSeek B 不按当前章节重复题跳过，选中题目会插入为本轮选题结果；若 DeepSeek 偶发返回空内容或数量不足，后端按已排序候选题兜底补齐并写入 warning
 - `POST /api/chapters/:id/import-teaching-questions`：从当前章节最新教学页中只导入显式双边界内题目：`历年真题演练开始` 到 `历年真题演练结束` 作为历年真题来源，`模拟题开始` 到 `模拟题结束` 作为模拟题来源；边界外内容一律不解析、不导入，不再回退全文扫描；边界标记兼容 Markdown 标题、emoji、加粗和空格变体；没有任何开始标记时返回 0 题并提示老师补充边界；只有开始没有结束时从开始标记解析到文末并返回 warning；边界内支持 `单选题：...`、`单选题（2017）：...`、`单选题（2023补充）：...`、`多选题：...`、`多选题（2023）：...`、`判断题：...`、`判断题（2017）：...`、`单选题（模拟题）：...`、`多选题（模拟题）：...`、`判断题（模拟题）：...`、`操作题（模拟题）：...` 等题型前缀，解析时去掉题型和年份 / 补充说明前缀，年份或补充信息写入 `year`
 - `POST /api/chapters/:id/cleanup-duplicate-questions`：老师清理当前章节 Notion AI 导入重复题
 - `POST /api/teacher/chapters/:id/questions`：老师手动新增当前章节题目
@@ -154,6 +157,7 @@ project/
 - `POST /api/teacher/questions/:id/archive`：老师隐藏题目，不物理删除历史答题记录
 - `POST /api/teacher/questions/:id/restore`：老师恢复已隐藏题目
 - `POST /api/chapters/:id/generate-teaching-page`：Codex Agent C 生成教学页
+- `POST /api/chapters/:id/deepseek-generate-teaching-page`：DeepSeek Agent C 生成教学页，默认使用 `DEEPSEEK_TEACHING_MODEL=deepseek-chat` 避免推理模型把输出耗在 `reasoning_content` 上，同时使用更大的 `DEEPSEEK_TEACHING_MAX_TOKENS` 输出上限，生成后仍是待人工检查的草稿
 - `POST /api/chapters/:id/generate-all`：串联执行 A/B/C
 - `POST /api/notion-agent/scan-triggers`：老师手动扫描 Notion 复选框触发项，并执行 A/B/C
 - `GET /api/chapters/:id/export/:kind`：导出 Markdown、HTML、PPT、题库
@@ -180,21 +184,21 @@ project/
 3. 后端调用 Qwen，将资料转换为 Markdown 原始页
 4. 后端把 Markdown 原始页写入 Notion 原始页面库，并关联当前章节
 5. 后端保存原始页到 SQLite `raw_pages`
-6. Codex Agent A 基于新旧大纲、章节和原始页生成考点
+6. Codex Agent A 基于新旧大纲、章节和原始页生成考点；DeepSeek Agent A 使用同一上下文、prompt 和 JSON schema，可作为国产模型入口生成同类考点结果
 7. 后端把 A 结果写入 SQLite，并同步 Notion 章节属性
-8. Codex Agent B 筛选章节相关真题并入库
+8. Codex Agent B 从 Notion 真题库、本地 SQLite 已沉淀题库、章节关联真题和真题原始资料中筛选章节相关真题并入库，并保留原有重复题跳过策略；DeepSeek Agent B 只输出候选题 `candidateId`，后端按 ID 复制原题并执行 Notion 关联和 SQLite 入库，作为参赛国产模型选题链路允许重复插入以保留本轮选题结果；DeepSeek B 返回空内容或数量不足时，后端使用排序后的已有候选题兜底补齐，不编造新题
 9. 后端写入 SQLite `exam_questions`，并关联 Notion 真题页
-10. Codex Agent C 生成章节教学页 Markdown
+10. Codex Agent C 或 DeepSeek Agent C 生成章节教学页 Markdown；DeepSeek C 使用更大的 token 输出上限以降低教学页截断风险
 11. 后端先把教学页追加/写回 Notion 章节库，再保存到 SQLite `teaching_pages`
 12. 前端从后端读取最新教学页，用于网页展示和导出
 
 既有 Notion Agent 内容同步链路：
 
-- 老师先点击“同步 Notion 章节列表”，只更新本地章节列表，避免全量读取正文导致请求超时
+- 老师先点击“同步 Notion 章节列表”，只更新本地章节列表，避免全量读取正文导致请求超时；Notion 失效章节只归档，不物理删除本地教学页、题库、答题记录或指定学生授权
 - 老师选中当前章节后点击“同步当前章节教学页”，后端只读取该章节 Notion 页面正文并写入 `teaching_pages`
 - 老师点击“导入当前章节习题”，后端只读取当前章节最新教学页中的双边界内容并写入 `exam_questions`：`历年真题演练开始` / `历年真题演练结束` 内按历年真题类来源处理，`模拟题开始` / `模拟题结束` 内按模拟题类来源处理；边界外的课堂提问、讲解示例、自编题和说明文字暂不进入网页题库；接口按题型返回解析、新增、更新、跳过统计
 - 当前阶段 Notion 教学页导入题按边界区分历年真题和模拟题来源；操作题允许没有选项，答案保存为“按步骤评分”，参考步骤保存到解析
-- 学生端只读取本地已开放章节、教学页和题库，不直接调用 Notion
+- 学生端只读取本地已开放且 `notion_archived = 0` 的章节、教学页和题库，不直接调用 Notion；即使曾被指定授权，也不能通过旧 URL 访问归档章节。老师可显示归档章节查看历史数据，但依赖 Notion 的操作会被阻止。
 
 Logseq 版 Notion Agent 触发链路：
 

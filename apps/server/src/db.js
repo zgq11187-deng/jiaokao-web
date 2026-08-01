@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS chapters (
   notion_url TEXT,
   status TEXT DEFAULT '待生成',
   student_visible INTEGER NOT NULL DEFAULT 0 CHECK(student_visible IN (0, 1)),
+  notion_archived INTEGER NOT NULL DEFAULT 0 CHECK(notion_archived IN (0, 1)),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS exam_questions (
   knowledge_tags_json TEXT DEFAULT '[]',
   notion_page_id TEXT,
   notion_url TEXT,
+  question_source_kind TEXT NOT NULL DEFAULT 'real_exam' CHECK(question_source_kind IN ('real_exam', 'mock_exam', 'manual')),
   is_archived INTEGER NOT NULL DEFAULT 0 CHECK(is_archived IN (0, 1)),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(chapter_id, stem, source)
@@ -146,12 +148,22 @@ CREATE INDEX IF NOT EXISTS idx_chapter_student_access_student
 
 migrateExamQuestionUniqueConstraint();
 migrateChapterStudentVisible();
+migrateChapterNotionArchived();
 migrateExamQuestionArchived();
+migrateExamQuestionSourceKind();
 
 function migrateChapterStudentVisible() {
   const columns = db.prepare(`PRAGMA table_info(chapters)`).all();
   if (columns.some((column) => column.name === "student_visible")) return;
   db.exec(`ALTER TABLE chapters ADD COLUMN student_visible INTEGER NOT NULL DEFAULT 0`);
+}
+
+function migrateChapterNotionArchived() {
+  const columns = db.prepare(`PRAGMA table_info(chapters)`).all();
+  if (columns.some((column) => column.name === "notion_archived")) return;
+  db.exec(
+    `ALTER TABLE chapters ADD COLUMN notion_archived INTEGER NOT NULL DEFAULT 0`,
+  );
 }
 
 function migrateExamQuestionUniqueConstraint() {
@@ -175,13 +187,20 @@ function migrateExamQuestionUniqueConstraint() {
       knowledge_tags_json TEXT DEFAULT '[]',
       notion_page_id TEXT,
       notion_url TEXT,
+      question_source_kind TEXT NOT NULL DEFAULT 'real_exam' CHECK(question_source_kind IN ('real_exam', 'mock_exam', 'manual')),
       is_archived INTEGER NOT NULL DEFAULT 0 CHECK(is_archived IN (0, 1)),
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(chapter_id, stem, source)
     );
     INSERT OR IGNORE INTO exam_questions_new
-      (id, chapter_id, stem, type, options, answer, analysis, difficulty, source, year, knowledge_tags_json, notion_page_id, notion_url, created_at)
-    SELECT id, chapter_id, stem, type, options, answer, analysis, difficulty, source, year, knowledge_tags_json, notion_page_id, notion_url, created_at
+      (id, chapter_id, stem, type, options, answer, analysis, difficulty, source, year, knowledge_tags_json, notion_page_id, notion_url, question_source_kind, created_at)
+    SELECT id, chapter_id, stem, type, options, answer, analysis, difficulty, source, year, knowledge_tags_json, notion_page_id, notion_url,
+      CASE
+        WHEN source LIKE '%模拟题%' OR year = '模拟' THEN 'mock_exam'
+        WHEN source LIKE '%手动题%' OR source LIKE '%自编题%' OR year = '自编' THEN 'manual'
+        ELSE 'real_exam'
+      END,
+      created_at
     FROM exam_questions;
     DROP TABLE exam_questions;
     ALTER TABLE exam_questions_new RENAME TO exam_questions;
@@ -193,6 +212,31 @@ function migrateExamQuestionArchived() {
   const columns = db.prepare(`PRAGMA table_info(exam_questions)`).all();
   if (columns.some((column) => column.name === "is_archived")) return;
   db.exec(`ALTER TABLE exam_questions ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0`);
+}
+
+function migrateExamQuestionSourceKind() {
+  const columns = db.prepare(`PRAGMA table_info(exam_questions)`).all();
+  if (!columns.some((column) => column.name === "question_source_kind")) {
+    db.exec(`ALTER TABLE exam_questions ADD COLUMN question_source_kind TEXT NOT NULL DEFAULT 'real_exam' CHECK(question_source_kind IN ('real_exam', 'mock_exam', 'manual'))`);
+  }
+  db.exec(`
+    UPDATE exam_questions
+    SET question_source_kind = CASE
+      WHEN source LIKE '%模拟题%' OR year = '模拟' THEN 'mock_exam'
+      WHEN source LIKE '%手动题%' OR source LIKE '%自编题%' OR year = '自编' THEN 'manual'
+      ELSE 'real_exam'
+    END
+    WHERE question_source_kind IS NULL
+       OR question_source_kind = ''
+       OR (
+         question_source_kind = 'real_exam'
+         AND (source LIKE '%模拟题%' OR year = '模拟')
+       )
+       OR (
+         question_source_kind = 'real_exam'
+         AND (source LIKE '%手动题%' OR source LIKE '%自编题%' OR year = '自编')
+       )
+  `);
 }
 
 export function all(sql, params = []) {

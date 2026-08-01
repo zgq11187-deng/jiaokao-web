@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   BookOpen,
@@ -30,6 +30,23 @@ import featureTeaching from "./assets/trial-features/teaching.png";
 import featureWrongQuestions from "./assets/trial-features/wrong-questions.png";
 
 const API = "";
+const CODEX_AGENT_VISIBLE_STORAGE_KEY = "jiaokao.codexAgentVisible";
+let mermaidPromise = null;
+
+function loadMermaid() {
+  if (!mermaidPromise) {
+    mermaidPromise = import("mermaid").then((module) => {
+      const mermaid = module.default;
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        theme: "default",
+      });
+      return mermaid;
+    });
+  }
+  return mermaidPromise;
+}
 
 const emptyAuthForm = {
   name: "",
@@ -52,6 +69,7 @@ function App() {
   const [teachers, setTeachers] = useState([]);
   const [studentChapterListOpen, setStudentChapterListOpen] = useState(false);
   const [teacherChapterListOpen, setTeacherChapterListOpen] = useState(true);
+  const [showArchivedChapters, setShowArchivedChapters] = useState(false);
   const [chapterSortMode, setChapterSortMode] = useState("number");
   const [chapterSearchIndex, setChapterSearchIndex] = useState("");
   const [editingChapterOrder, setEditingChapterOrder] = useState(null);
@@ -74,8 +92,15 @@ function App() {
   const latestTeaching = detail?.teachingPages?.[0] || null;
   const isTeacher = user?.role === "teacher";
   const isAuthorized = isTeacher || user?.authorizationStatus === "approved";
+  const visibleChapters = useMemo(
+    () =>
+      isTeacher && !showArchivedChapters
+        ? chapters.filter((chapter) => Number(chapter.notion_archived) !== 1)
+        : chapters,
+    [chapters, isTeacher, showArchivedChapters],
+  );
   const sortedChapters = useMemo(() => {
-    const sorted = [...chapters];
+    const sorted = [...visibleChapters];
 
     switch (chapterSortMode) {
       case "number":
@@ -98,7 +123,7 @@ function App() {
       default:
         return sorted;
     }
-  }, [chapters, chapterSortMode]);
+  }, [visibleChapters, chapterSortMode]);
 
   const filteredChapters = useMemo(() => {
     if (!chapterSearchIndex.trim()) return sortedChapters;
@@ -111,6 +136,9 @@ function App() {
       return title.includes(searchText) || chapterInfo.includes(searchText);
     });
   }, [sortedChapters, chapterSearchIndex]);
+  const selectedListedChapter = filteredChapters.find(
+    (chapter) => chapter.id === selectedId,
+  );
   const workspaceTitle = isTeacher
     ? selected?.title || "请选择或新建章节"
     : studentPageTitle(routePath, selected);
@@ -162,6 +190,20 @@ function App() {
       setSelectedId(chapters[0].id);
     }
   }, [chapters, routePath, isTeacher]);
+
+  useEffect(() => {
+    if (
+      !isTeacher ||
+      showArchivedChapters ||
+      !selected ||
+      Number(selected.notion_archived) !== 1
+    ) {
+      return;
+    }
+    const nextChapter = sortedChapters[0] || null;
+    setSelectedId(nextChapter?.id || null);
+    if (!nextChapter) setDetail(null);
+  }, [isTeacher, showArchivedChapters, selected?.id, selected?.notion_archived, sortedChapters]);
 
   useEffect(() => {
     if (selectedId && isAuthorized) loadDetail(selectedId);
@@ -280,10 +322,11 @@ function App() {
         method: "POST",
       });
       setChapters(data.chapters || []);
+      setShowArchivedChapters(false);
       const result = data.syncResult;
       if (result) {
         setSyncNotice(
-          `Notion 章节列表同步完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，隐藏 ${result.hidden || 0}，保留 ${result.kept || 0}。`,
+          `Notion 章节列表同步完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，归档 ${result.archived || 0}，恢复 ${result.restored || 0}，保留本地章节 ${result.kept || 0}，跳过无效页面 ${result.skippedInvalid || 0}。归档章节的数据仍保留，可通过“显示已归档”查看。`,
         );
       }
     });
@@ -806,6 +849,14 @@ function App() {
                 {teacherChapterListOpen ? "收起" : "切换"}
               </button>
             ) : null}
+            {isTeacher ? (
+              <button
+                onClick={() => setShowArchivedChapters((visible) => !visible)}
+                title={showArchivedChapters ? "隐藏已归档章节" : "显示已归档章节"}
+              >
+                {showArchivedChapters ? "隐藏已归档" : "显示已归档"}
+              </button>
+            ) : null}
             {!isTeacher && chapters.length > 1 ? (
               <button
                 onClick={() => setStudentChapterListOpen((open) => !open)}
@@ -829,8 +880,8 @@ function App() {
           {(isTeacher
             ? teacherChapterListOpen
               ? filteredChapters
-              : selected
-                ? [selected]
+              : selectedListedChapter
+                ? [selectedListedChapter]
                 : filteredChapters.slice(0, 1)
             : studentChapterListOpen
               ? filteredChapters
@@ -900,15 +951,21 @@ function App() {
                 <div>
                   <strong>{chapter.title}</strong>
                   <span>
-                    {chapter.status || "待生成"}
+                    {describeChapterStatus(chapter)}
                     {isTeacher ? ` · ${describeChapterVisibility(chapter)}` : ""}
                   </span>
                 </div>
               </button>
             );
           })}
-          {!chapters.length ? (
-            <p className="muted">{isTeacher ? "暂无章节。" : "暂无开放章节，请等待老师发布。"}</p>
+          {!filteredChapters.length ? (
+            <p className="muted">
+              {isTeacher && chapters.length && !showArchivedChapters
+                ? "暂无未归档章节。可点击“显示已归档”查看历史数据。"
+                : isTeacher
+                  ? "暂无章节。"
+                  : "暂无开放章节，请等待老师发布。"}
+            </p>
           ) : null}
         </nav>
       </aside>
@@ -1002,6 +1059,11 @@ function describeChapterVisibility(chapter) {
   const count = Number(chapter.student_access_count || 0);
   if (count > 0) return `仅 ${count} 位指定学生可见`;
   return "对所有学生隐藏";
+}
+
+function describeChapterStatus(chapter) {
+  if (Number(chapter?.notion_archived) === 1) return "Notion 已删除/已归档";
+  return chapter?.status || "待生成";
 }
 
 function ChapterAccessPanel({ chapter, access, filter, onFilterChange, onToggleStudent, busy }) {
@@ -1709,6 +1771,8 @@ function TeacherWorkspace(props) {
     setChapterAccessFilter,
     setChapterStudentAccess,
   } = props;
+  const notionArchived = Number(selected?.notion_archived) === 1;
+  const notionActionDisabled = Boolean(busy) || notionArchived;
   const [studentForm, setStudentForm] = useState(emptyAuthForm);
   const [teacherForm, setTeacherForm] = useState(emptyAuthForm);
   const [passwordForm, setPasswordForm] = useState({
@@ -1719,6 +1783,21 @@ function TeacherWorkspace(props) {
   const [questionManagerOpen, setQuestionManagerOpen] = useState(false);
   const [teacherListOpen, setTeacherListOpen] = useState(false);
   const [studentAuthOpen, setStudentAuthOpen] = useState(false);
+  const [codexAgentVisible, setCodexAgentVisible] = useState(() => {
+    try {
+      return localStorage.getItem(CODEX_AGENT_VISIBLE_STORAGE_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CODEX_AGENT_VISIBLE_STORAGE_KEY, String(codexAgentVisible));
+    } catch {
+      // localStorage may be unavailable in privacy modes; visibility still works for this session.
+    }
+  }, [codexAgentVisible]);
 
   async function submitStudent(event) {
     event.preventDefault();
@@ -1761,6 +1840,136 @@ function TeacherWorkspace(props) {
     await onConfirm(password);
     window.alert(`${label} 的密码已重置，请通知该用户使用新密码重新登录。`);
   }
+
+  const flowCards = [
+    {
+      key: "qwen",
+      title: "Qwen 原始页面",
+      icon: <Upload size={18} />,
+      content: (
+        <>
+          <input
+            type="file"
+            multiple
+            onChange={(event) => setFiles([...event.target.files])}
+          />
+          <p>{files.length ? `已选择 ${files.length} 个文件` : "支持图片、PDF、CSV、TXT、MD"}</p>
+          <button onClick={uploadRawPage} disabled={notionActionDisabled}>
+            <Sparkles size={16} /> 生成 Markdown 原始页
+          </button>
+          <button onClick={createLecturePage} disabled={notionActionDisabled}>
+            <FileText size={16} /> 创建 Notion 讲义页
+          </button>
+          {!codexAgentVisible ? (
+            <button className="subtle-button" onClick={() => setCodexAgentVisible(true)} disabled={Boolean(busy)}>
+              显示
+            </button>
+          ) : null}
+        </>
+      ),
+    },
+  ];
+
+  if (codexAgentVisible) {
+    flowCards.push({
+      key: "codex",
+      title: "Agent A/B/C",
+      icon: <Layers size={18} />,
+      content: (
+        <>
+          <button className="subtle-button" onClick={() => setCodexAgentVisible(false)} disabled={Boolean(busy)}>
+            隐藏
+          </button>
+          <button onClick={() => runStep("fill-outline", "A 自动填充考点")} disabled={notionActionDisabled}>
+            A 自动填充考点
+          </button>
+          <button onClick={() => runStep("import-exam-questions", "B 真题自动入库")} disabled={notionActionDisabled}>
+            B 真题自动入库
+          </button>
+          <button onClick={() => runStep("generate-teaching-page", "C 生成教学页")} disabled={notionActionDisabled}>
+            C 生成教学页
+          </button>
+          <button className="primary" onClick={() => runStep("generate-all", "A/B/C 串联生成")} disabled={notionActionDisabled}>
+            <Sparkles size={16} /> 一键执行 A/B/C
+          </button>
+        </>
+      ),
+    });
+  }
+
+  flowCards.push(
+    {
+      key: "deepseek",
+      title: "DeepSeek Agent A/B/C",
+      icon: <Layers size={18} />,
+      content: (
+        <>
+          <button onClick={() => runStep("deepseek-fill-outline", "DeepSeek A 自动填充考点")} disabled={notionActionDisabled}>
+            A 自动填充考点
+          </button>
+          <button onClick={() => runStep("deepseek-import-exam-questions", "DeepSeek B 真题自动入库")} disabled={notionActionDisabled}>
+            B 真题自动入库
+          </button>
+          <button onClick={() => runStep("deepseek-generate-teaching-page", "DeepSeek C 生成教学页")} disabled={notionActionDisabled}>
+            C 生成教学页
+          </button>
+          <button className="primary" onClick={() => runStep("deepseek-generate-all", "一键执行 DeepSeek A/B/C")} disabled={notionActionDisabled}>
+            <Sparkles size={16} /> 一键执行 DeepSeek A/B/C
+          </button>
+        </>
+      ),
+    },
+    {
+      key: "questions",
+      title: "章节题库与教学页管理",
+      icon: <ClipboardList size={18} />,
+      content: (
+        <>
+          <button onClick={syncCurrentTeachingPageFromNotion} disabled={notionActionDisabled}>
+            <RefreshCw size={16} /> 同步当前章节教学页
+          </button>
+          <button
+            onClick={async () => {
+              await runStep("import-teaching-questions", "导入当前章节习题");
+              setQuestionManagerOpen(true);
+            }}
+            disabled={Boolean(busy)}
+          >
+            <ClipboardList size={16} /> 导入当前章节习题
+          </button>
+          <button onClick={() => setQuestionManagerOpen((open) => !open)} disabled={!selected}>
+            <ClipboardList size={16} /> {questionManagerOpen ? "收起章节习题" : "显示/编辑章节习题"}
+          </button>
+          <button onClick={cleanupDuplicateQuestions} disabled={Boolean(busy)}>
+            <ClipboardList size={16} /> 清理当前章节重复题
+          </button>
+        </>
+      ),
+    },
+    {
+      key: "notion",
+      title: "Notion 自动化",
+      icon: <RefreshCw size={18} />,
+      content: (
+        <button onClick={scanNotionTriggers} disabled={Boolean(busy)}>
+          <RefreshCw size={16} /> 扫描 Notion 触发项
+        </button>
+      ),
+    },
+    {
+      key: "exports",
+      title: "导出",
+      icon: <Download size={18} />,
+      content: (
+        <>
+          <button onClick={() => exportFile("ppt")}>导出演示 PPT</button>
+          <button onClick={() => exportFile("site")}>导出教学网页</button>
+          <button onClick={() => exportFile("question-bank")}>导出章节题库</button>
+          <button onClick={() => exportFile("markdown")}>导出 Markdown</button>
+        </>
+      ),
+    },
+  );
 
   return (
     <>
@@ -2006,17 +2215,23 @@ function TeacherWorkspace(props) {
 
       {selected ? (
         <>
+          {notionArchived ? (
+            <section className="chapter-archive-notice">
+              <strong>Notion 已删除/已归档</strong>
+              <span>历史教学页和题库仍可查看；当前 Notion 页面已不存在，无法重新同步教学页或执行依赖 Notion 的操作。</span>
+            </section>
+          ) : null}
           <section className="chapter-publish-panel">
             <div>
               <strong>章节开放范围</strong>
               <span>{describeChapterVisibility(selected)}</span>
             </div>
             {selected.student_visible ? (
-              <button onClick={() => updateChapterVisibility(selected.id, false)} disabled={Boolean(busy)}>
+              <button onClick={() => updateChapterVisibility(selected.id, false)} disabled={Boolean(busy) || notionArchived}>
                 对所有学生关闭
               </button>
             ) : (
-              <button className="primary" onClick={() => updateChapterVisibility(selected.id, true)} disabled={Boolean(busy)}>
+              <button className="primary" onClick={() => updateChapterVisibility(selected.id, true)} disabled={Boolean(busy) || notionArchived}>
                 开放给所有学生
               </button>
             )}
@@ -2027,66 +2242,14 @@ function TeacherWorkspace(props) {
             filter={chapterAccessFilter}
             onFilterChange={setChapterAccessFilter}
             onToggleStudent={setChapterStudentAccess}
-            busy={busy}
+            busy={busy || notionArchived}
           />
           <section className="flow-grid">
-            <FlowCard index="1" title="Qwen 原始页面" icon={<Upload size={18} />}>
-              <input
-                type="file"
-                multiple
-                onChange={(event) => setFiles([...event.target.files])}
-              />
-              <p>{files.length ? `已选择 ${files.length} 个文件` : "支持图片、PDF、CSV、TXT、MD"}</p>
-              <button onClick={uploadRawPage} disabled={Boolean(busy)}>
-                <Sparkles size={16} /> 生成 Markdown 原始页
-              </button>
-              <button onClick={createLecturePage} disabled={Boolean(busy)}>
-                <FileText size={16} /> 创建 Notion 讲义页
-              </button>
-            </FlowCard>
-
-            <FlowCard index="2" title="DeepSeek Agent A/B/C" icon={<Layers size={18} />}>
-              <button onClick={() => runStep("fill-outline", "A 自动填充考点")} disabled={Boolean(busy)}>
-                A 自动填充考点
-              </button>
-              <button onClick={() => runStep("import-exam-questions", "B 真题自动入库")} disabled={Boolean(busy)}>
-                B 真题自动入库
-              </button>
-              <button onClick={() => runStep("generate-teaching-page", "C 生成教学页")} disabled={Boolean(busy)}>
-                C 生成教学页
-              </button>
-              <button onClick={syncCurrentTeachingPageFromNotion} disabled={Boolean(busy)}>
-                <RefreshCw size={16} /> 同步当前章节教学页
-              </button>
-              <button
-                onClick={async () => {
-                  await runStep("import-teaching-questions", "导入当前章节习题");
-                  setQuestionManagerOpen(true);
-                }}
-                disabled={Boolean(busy)}
-              >
-                <ClipboardList size={16} /> 导入当前章节习题
-              </button>
-              <button onClick={() => setQuestionManagerOpen((open) => !open)} disabled={!selected}>
-                <ClipboardList size={16} /> {questionManagerOpen ? "收起章节习题" : "显示/编辑章节习题"}
-              </button>
-              <button onClick={cleanupDuplicateQuestions} disabled={Boolean(busy)}>
-                <ClipboardList size={16} /> 清理当前章节重复题
-              </button>
-              <button className="primary" onClick={() => runStep("generate-all", "A/B/C 串联生成")} disabled={Boolean(busy)}>
-                <Sparkles size={16} /> 一键执行 A/B/C
-              </button>
-              <button onClick={scanNotionTriggers} disabled={Boolean(busy)}>
-                <RefreshCw size={16} /> 扫描 Notion 触发项
-              </button>
-            </FlowCard>
-
-            <FlowCard index="3" title="导出" icon={<Download size={18} />}>
-              <button onClick={() => exportFile("ppt")}>导出演示 PPT</button>
-              <button onClick={() => exportFile("site")}>导出教学网页</button>
-              <button onClick={() => exportFile("question-bank")}>导出章节题库</button>
-              <button onClick={() => exportFile("markdown")}>导出 Markdown</button>
-            </FlowCard>
+            {flowCards.map((card, index) => (
+              <FlowCard key={card.key} index={String(index + 1)} title={card.title} icon={card.icon}>
+                {card.content}
+              </FlowCard>
+            ))}
           </section>
 
           {questionManagerOpen ? (
@@ -2113,6 +2276,58 @@ function TeacherWorkspace(props) {
 
 const questionTypes = ["单选题", "多选题", "判断题", "简答题", "操作题"];
 const difficultyOptions = ["易", "中", "难"];
+const questionSourceOrder = ["real_exam", "mock_exam", "manual"];
+const questionSourceLabels = {
+  real_exam: "历年真题",
+  mock_exam: "模拟题",
+  manual: "补充练习",
+};
+
+function questionSourceKindLabel(kind) {
+  return questionSourceLabels[kind] || questionSourceLabels.real_exam;
+}
+
+function inferClientQuestionSourceKind(question = {}) {
+  if (question.question_source_kind && questionSourceLabels[question.question_source_kind]) {
+    return question.question_source_kind;
+  }
+  const source = String(question.source || "");
+  const year = String(question.year || "");
+  if (source.includes("模拟题") || year === "模拟") return "mock_exam";
+  if (source.includes("手动题") || source.includes("自编题") || year === "自编") return "manual";
+  return "real_exam";
+}
+
+function buildQuestionGroups(questions = []) {
+  const groups = questionSourceOrder.map((key) => ({
+    key,
+    label: questionSourceKindLabel(key),
+    questions: [],
+  }));
+  const groupMap = new Map(groups.map((group) => [group.key, group]));
+
+  questions.forEach((question) => {
+    const kind = inferClientQuestionSourceKind(question);
+    const group = groupMap.get(kind) || groupMap.get("real_exam");
+    group.questions.push(question);
+  });
+
+  return groups
+    .map((group) => {
+      const typeGroups = questionTypes
+        .map((type) => ({
+          type,
+          questions: group.questions.filter((question) => (question.type || "简答题") === type),
+        }))
+        .filter((item) => item.questions.length);
+      return {
+        ...group,
+        count: group.questions.length,
+        typeGroups,
+      };
+    })
+    .filter((group) => group.count);
+}
 
 function formatTeachingQuestionImportNotice(data = {}) {
   const stats = data.byType || {};
@@ -2191,6 +2406,7 @@ function TeacherQuestionManager({
   const activeQuestions = questions.filter((question) => !question.is_archived);
   const archivedQuestions = questions.filter((question) => question.is_archived);
   const visibleQuestions = showArchived ? questions : activeQuestions;
+  const groupedQuestions = buildQuestionGroups(visibleQuestions);
 
   async function submitNewQuestion(event) {
     event.preventDefault();
@@ -2293,8 +2509,20 @@ function TeacherQuestionManager({
 
       <div className="question-editor-list">
         {visibleQuestions.length ? (
-          visibleQuestions.map((question) => (
-            <article key={question.id} className={question.is_archived ? "question-editor archived" : "question-editor"}>
+          groupedQuestions.map((sourceGroup) => (
+            <section key={sourceGroup.key} className="question-source-section">
+              <div className="question-source-title">
+                <h4>{sourceGroup.label}</h4>
+                <span>{sourceGroup.count} 题</span>
+              </div>
+              {sourceGroup.typeGroups.map((typeGroup) => (
+                <div key={`${sourceGroup.key}-${typeGroup.type}`} className="question-type-section">
+                  <div className="question-type-title">
+                    <strong>{typeGroup.type}</strong>
+                    <span>{typeGroup.questions.length} 题</span>
+                  </div>
+                  {typeGroup.questions.map((question) => (
+                    <article key={question.id} className={question.is_archived ? "question-editor archived" : "question-editor"}>
               {editingId === question.id ? (
                 <form className="question-edit-form" onSubmit={(event) => saveQuestion(event, question.id)}>
                   <div className="question-form-grid">
@@ -2366,6 +2594,7 @@ function TeacherQuestionManager({
                     <div className="question-meta">
                       <span>{question.id}</span>
                       <strong>{question.type || "题目"}</strong>
+                      <em>{questionSourceKindLabel(question.question_source_kind)}</em>
                       {question.is_archived ? <em>已隐藏</em> : null}
                       {question.answer ? <em>答案：{question.answer}</em> : <em>答案待补充</em>}
                       {question.source ? <em>{question.source}</em> : null}
@@ -2390,7 +2619,11 @@ function TeacherQuestionManager({
                   <p>解析：{question.analysis || "暂无解析"}</p>
                 </>
               )}
-            </article>
+                    </article>
+                  ))}
+                </div>
+              ))}
+            </section>
           ))
         ) : (
           <div className="empty">当前章节还没有题目。可先导入当前章节习题，或手动新增。</div>
@@ -2425,6 +2658,7 @@ function StudentWorkspace({
   const [studentError, setStudentError] = useState("");
 
   const questions = detail?.questions || [];
+  const groupedPracticeQuestions = buildQuestionGroups(questions);
   const outline = detail?.outlines?.[0] || null;
   const practiceQuestions = questions;
 
@@ -2591,19 +2825,35 @@ function StudentWorkspace({
             <span className="pill">{practiceQuestions.length} 题</span>
           </div>
           {practiceQuestions.length ? (
-            practiceQuestions.map((question, index) => (
-              <QuestionCard
-                key={question.id}
-                question={question}
-                index={index + 1}
-                value={answers[question.id] || ""}
-                onChange={(value) =>
-                  setAnswers((current) => ({ ...current, [question.id]: value }))
-                }
-                result={practiceResults[question.id]}
-                onSubmit={() => submitPractice(question)}
-                disabled={Boolean(busy || studentBusy)}
-              />
+            groupedPracticeQuestions.map((sourceGroup) => (
+              <section key={sourceGroup.key} className="student-question-source-section">
+                <div className="question-source-title">
+                  <h3>{sourceGroup.label}</h3>
+                  <span>{sourceGroup.count} 题</span>
+                </div>
+                {sourceGroup.typeGroups.map((typeGroup) => (
+                  <div key={`${sourceGroup.key}-${typeGroup.type}`} className="student-question-type-section">
+                    <div className="question-type-title">
+                      <strong>{typeGroup.type}</strong>
+                      <span>{typeGroup.questions.length} 题</span>
+                    </div>
+                    {typeGroup.questions.map((question, index) => (
+                      <QuestionCard
+                        key={question.id}
+                        question={question}
+                        index={index + 1}
+                        value={answers[question.id] || ""}
+                        onChange={(value) =>
+                          setAnswers((current) => ({ ...current, [question.id]: value }))
+                        }
+                        result={practiceResults[question.id]}
+                        onSubmit={() => submitPractice(question)}
+                        disabled={Boolean(busy || studentBusy)}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </section>
             ))
           ) : (
             <div className="empty">本章还没有题目。老师完成 B 真题自动入库后即可练习。</div>
@@ -2803,6 +3053,7 @@ function QuestionCard({
       <div className="question-meta">
         <span>{String(index).padStart(2, "0")}</span>
         <strong>{question.type || "题目"}</strong>
+        <em>{questionSourceKindLabel(inferClientQuestionSourceKind(question))}</em>
         {question.year ? <em>{question.year}</em> : null}
         {question.source ? <em>{question.source}</em> : null}
       </div>
@@ -2899,6 +3150,7 @@ function WrongQuestionCard({ question, index }) {
 }
 
 function MockResult({ result }) {
+  const analysis = result.analysis;
   return (
     <section className="mock-result">
       <div>
@@ -2916,7 +3168,73 @@ function MockResult({ result }) {
       ) : (
         <p>本次没有明显薄弱章节。</p>
       )}
+      {analysis ? <MockAnalysis analysis={analysis} /> : null}
     </section>
+  );
+}
+
+function MockAnalysis({ analysis }) {
+  const summary = analysis.summary || {};
+  const pointStats = analysis.pointStats || analysis.weakKnowledgeTags || [];
+  const weaknesses = analysis.weakPoints?.length
+    ? analysis.weakPoints.map((item) => `${item.name}（正确率 ${item.accuracy}%）`)
+    : pointStats.filter((item) => item.accuracy < 85 && item.wrong > 0).map((item) => `${item.name}（正确率 ${item.accuracy}%）`);
+  const suggestions = analysis.aiSuggestions?.length ? analysis.aiSuggestions : analysis.suggestions || [];
+  const nextPractice = analysis.nextPractice || [];
+  const providerName = analysis.provider === "codex-luna" ? "Codex Luna" : analysis.provider === "deepseek" ? "DeepSeek" : "基础统计";
+  const basis = analysis.basis || {};
+  return (
+    <div className="mock-analysis">
+      <div className="mock-analysis-heading">
+        <strong>本次成绩分析</strong>
+        <span>{providerName}</span>
+      </div>
+      <p className="mock-analysis-basis">
+        分析依据：{basis.newOutline ? "新大纲考点" : "题目标签"}、{basis.keyPoints ? "重点" : "题目表现"}、{basis.hardPoints ? "难点" : "作答结果"}及本次作答结果
+      </p>
+      <p className="mock-analysis-summary">
+        {analysis.aiSummary || `${summary.level || "学习诊断"}：${summary.message || "建议结合错题继续练习。"}`}
+      </p>
+      {weaknesses.length ? (
+        <p><strong>薄弱考点：</strong>{weaknesses.join("、")}</p>
+      ) : null}
+      {suggestions.length ? (
+        <ul>
+          {suggestions.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+        </ul>
+      ) : null}
+      {nextPractice.length ? (
+        <details className="mock-analysis-details">
+          <summary>查看下一步练习</summary>
+          <ul>
+            {nextPractice.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+          </ul>
+        </details>
+      ) : null}
+      {pointStats.length ? (
+        <details className="mock-analysis-details">
+          <summary>查看考点掌握明细</summary>
+          <div className="mock-stat-grid">
+            {pointStats.map((item) => (
+              <span key={`point-${item.name}`}>{item.name}：{item.correct}/{item.total}（{item.accuracy}%，{item.status || "需要复盘"}）</span>
+            ))}
+          </div>
+        </details>
+      ) : null}
+      {analysis.pointMapping?.length ? (
+        <details className="mock-analysis-details">
+          <summary>查看错题对应考点</summary>
+          <div className="mock-stat-grid">
+            {analysis.pointMapping
+              .filter((item) => item.points?.length)
+              .map((item) => (
+                <span key={`mapping-${item.questionId}`}>第 {item.questionId} 题：{item.points.join("、")}</span>
+              ))}
+          </div>
+        </details>
+      ) : null}
+      {analysis.fallbackReason ? <p className="mock-analysis-fallback">{analysis.fallbackReason}</p> : null}
+    </div>
   );
 }
 
@@ -3003,11 +3321,15 @@ function renderMarkdownBlocks(markdown) {
     if (/^```/.test(line.trim())) {
       flushParagraph(`p-${index}`);
       const parsed = collectCodeBlock(lines, index);
-      blocks.push(
-        <pre key={`code-${index}`} className={parsed.lang === "mermaid" ? "md-mermaid" : ""}>
-          <code>{parsed.body.join("\n")}</code>
-        </pre>,
-      );
+      if (parsed.lang === "mermaid") {
+        blocks.push(<MermaidDiagram key={`mermaid-${index}`} chart={parsed.body.join("\n")} />);
+      } else {
+        blocks.push(
+          <pre key={`code-${index}`}>
+            <code>{parsed.body.join("\n")}</code>
+          </pre>,
+        );
+      }
       index = parsed.endIndex;
       continue;
     }
@@ -3097,6 +3419,61 @@ function renderMarkdownBlocks(markdown) {
   }
   flushParagraph("p-final");
   return blocks;
+}
+
+function MermaidDiagram({ chart }) {
+  const idRef = useRef(`mermaid-${Math.random().toString(36).slice(2)}`);
+  const [svg, setSvg] = useState("");
+  const [error, setError] = useState("");
+  const normalizedChart = String(chart || "").trim();
+
+  useEffect(() => {
+    let cancelled = false;
+    setSvg("");
+    setError("");
+
+    if (!normalizedChart) {
+      setError("导图内容为空");
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    loadMermaid()
+      .then((mermaid) => mermaid.render(`${idRef.current}-${Date.now()}`, normalizedChart))
+      .then(({ svg: renderedSvg }) => {
+        if (!cancelled) setSvg(renderedSvg);
+      })
+      .catch((renderError) => {
+        if (!cancelled) setError(renderError?.message || "Mermaid 语法错误");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [normalizedChart]);
+
+  if (svg) {
+    return (
+      <div className="md-mermaid-diagram">
+        <div className="md-mermaid-svg" dangerouslySetInnerHTML={{ __html: svg }} />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="md-mermaid-diagram error">
+        <strong>导图渲染失败，请检查 Mermaid 语法。</strong>
+        <p>{error}</p>
+        <pre>
+          <code>{normalizedChart}</code>
+        </pre>
+      </div>
+    );
+  }
+
+  return <div className="md-mermaid-diagram loading">正在渲染导图...</div>;
 }
 
 function isMarkdownTableStart(lines, index) {
@@ -3239,25 +3616,70 @@ function renderInline(text) {
     /<mark\s+color="([^"]+)">([\s\S]*?)<\/mark>|<span\s+color="([^"]+)">([\s\S]*?)<\/span>|\*\*([^*]+)\*\*/gi;
   let lastIndex = 0;
   let key = 0;
+  const value = String(text || "");
   for (const match of String(text || "").matchAll(pattern)) {
     if (match.index > lastIndex) {
-      nodes.push(String(text).slice(lastIndex, match.index));
+      nodes.push(...renderMathInline(value.slice(lastIndex, match.index), `txt-${key++}`));
     }
     if (match[1] || match[3]) {
       nodes.push(
         <mark key={`mark-${key++}`} className={toToneClass(match[1] || match[3])}>
-          {match[2] || match[4]}
+          {renderMathInline(match[2] || match[4], `mark-${key}`)}
         </mark>,
       );
     } else {
-      nodes.push(<strong key={`strong-${key++}`}>{match[5]}</strong>);
+      nodes.push(<strong key={`strong-${key++}`}>{renderMathInline(match[5], `strong-${key}`)}</strong>);
     }
     lastIndex = match.index + match[0].length;
   }
-  if (lastIndex < String(text).length) {
-    nodes.push(String(text).slice(lastIndex));
+  if (lastIndex < value.length) {
+    nodes.push(...renderMathInline(value.slice(lastIndex), `txt-${key++}`));
   }
   return nodes;
+}
+
+function renderMathInline(text, keyPrefix = "math") {
+  const value = String(text || "");
+  const nodes = [];
+  const exponent = String.raw`\{(?:[+\-−]?\d+|[A-Za-z])\}|[+\-−]?\d+|[A-Za-z]`;
+  const subscript = String.raw`\{[+\-−]?\d+\}|[+\-−]?\d`;
+  const pattern = new RegExp(String.raw`\\times|\^(${exponent})|_(${subscript})`, "g");
+  let lastIndex = 0;
+  let key = 0;
+
+  for (const match of value.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    const marker = match[0][0];
+    if ((marker === "^" || marker === "_") && !/[A-Za-z0-9)]/.test(value[index - 1] || "")) {
+      continue;
+    }
+    if (index > lastIndex) nodes.push(value.slice(lastIndex, index));
+    if (match[0] === "\\times") {
+      nodes.push("×");
+    } else if (marker === "^") {
+      nodes.push(
+        <sup key={`${keyPrefix}-sup-${key++}`} className="md-sup">
+          {stripMathBraces(match[1])}
+        </sup>,
+      );
+    } else {
+      nodes.push(
+        <sub key={`${keyPrefix}-sub-${key++}`} className="md-sub">
+          {stripMathBraces(match[2])}
+        </sub>,
+      );
+    }
+    lastIndex = index + match[0].length;
+  }
+  if (lastIndex < value.length) nodes.push(value.slice(lastIndex));
+  return nodes;
+}
+
+function stripMathBraces(value) {
+  return String(value || "")
+    .replace(/^\{/, "")
+    .replace(/\}$/, "")
+    .replace(/−/g, "-");
 }
 
 function parseQuestionOptions(options) {
