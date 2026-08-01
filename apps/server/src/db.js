@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS chapters (
   notion_url TEXT,
   status TEXT DEFAULT '待生成',
   student_visible INTEGER NOT NULL DEFAULT 0 CHECK(student_visible IN (0, 1)),
+  notion_archived INTEGER NOT NULL DEFAULT 0 CHECK(notion_archived IN (0, 1)),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -147,6 +148,7 @@ CREATE INDEX IF NOT EXISTS idx_chapter_student_access_student
 
 migrateExamQuestionUniqueConstraint();
 migrateChapterStudentVisible();
+migrateChapterNotionArchived();
 migrateExamQuestionArchived();
 migrateExamQuestionSourceKind();
 
@@ -154,6 +156,14 @@ function migrateChapterStudentVisible() {
   const columns = db.prepare(`PRAGMA table_info(chapters)`).all();
   if (columns.some((column) => column.name === "student_visible")) return;
   db.exec(`ALTER TABLE chapters ADD COLUMN student_visible INTEGER NOT NULL DEFAULT 0`);
+}
+
+function migrateChapterNotionArchived() {
+  const columns = db.prepare(`PRAGMA table_info(chapters)`).all();
+  if (columns.some((column) => column.name === "notion_archived")) return;
+  db.exec(
+    `ALTER TABLE chapters ADD COLUMN notion_archived INTEGER NOT NULL DEFAULT 0`,
+  );
 }
 
 function migrateExamQuestionUniqueConstraint() {

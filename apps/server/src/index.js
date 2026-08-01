@@ -8,6 +8,7 @@ import { all, get, logStep, run } from "./db.js";
 import { generateRawMarkdownWithQwen } from "./qwen.js";
 import { runCodexJson } from "./codex.js";
 import { runDeepSeekJson } from "./deepseek.js";
+import { generateMockExamAnalysis } from "./mock-analysis.js";
 import {
   addPageComment,
   appendMarkdownToPage,
@@ -303,6 +304,11 @@ app.post("/api/teacher/sync-chapters-from-notion", requireTeacher, async (_req, 
 app.post("/api/teacher/chapters/:id/sync-teaching-page-from-notion", requireTeacher, async (req, res) => {
   try {
     const chapter = mustChapter(req.params.id);
+    if (Number(chapter.notion_archived) === 1) {
+      return res.status(409).json({
+        error: "当前 Notion 页面已不存在，无法重新同步教学页",
+      });
+    }
     const action = await syncTeachingPageFromNotionChapter(chapter);
     res.json({ ok: true, action });
   } catch (error) {
@@ -359,9 +365,9 @@ app.patch("/api/teacher/chapters/:id/order", requireTeacher, (req, res) => {
 app.get("/api/public/trial-chapter", (_req, res) => {
   try {
     const chapter = get(
-      `SELECT id, title, chapter_no, section_no, status, student_visible, created_at, updated_at
+      `SELECT id, title, chapter_no, section_no, status, student_visible, notion_archived, created_at, updated_at
        FROM chapters
-       WHERE id = ?`,
+       WHERE id = ? AND COALESCE(notion_archived, 0) = 0`,
       [PUBLIC_TRIAL_CHAPTER_ID],
     );
     if (!chapter) return res.status(404).json({ error: "公开试用章节不存在" });
@@ -594,7 +600,7 @@ app.get("/api/mock-exam/questions", requireAuthorized, (req, res) => {
   res.json({ ok: true, questions });
 });
 
-app.post("/api/mock-exam/submit", requireAuthorized, (req, res) => {
+app.post("/api/mock-exam/submit", requireAuthorized, async (req, res) => {
   try {
     const answers = Array.isArray(req.body?.answers) ? req.body.answers : [];
     if (!answers.length) return res.status(400).json({ error: "请至少提交 1 道题" });
@@ -620,6 +626,7 @@ app.post("/api/mock-exam/submit", requireAuthorized, (req, res) => {
         selectedAnswer: selectedAnswer || "未作答",
         correctAnswer: question.answer || "未填写",
         analysis: question.analysis || "暂无解析",
+        knowledgeTags: parseJsonArray(question.knowledge_tags_json),
         isCorrect,
       };
     });
@@ -636,6 +643,20 @@ app.post("/api/mock-exam/submit", requireAuthorized, (req, res) => {
         title: get(`SELECT title FROM chapters WHERE id = ?`, [chapterId])?.title || "未知章节",
         wrongCount,
       }));
+    const chapterIds = [...new Set(results.map((item) => item.chapterId))];
+    const analysisChapters = chapterIds.map((chapterId) => ({
+      id: chapterId,
+      title: get(`SELECT title FROM chapters WHERE id = ?`, [chapterId])?.title || "未知章节",
+      outline: get(
+        `SELECT * FROM outline_analyses WHERE chapter_id = ? ORDER BY id DESC LIMIT 1`,
+        [chapterId],
+      ) || null,
+    }));
+    const analysis = await generateMockExamAnalysis({
+      provider: config.mockAnalysis.provider,
+      chapters: analysisChapters,
+      results,
+    });
     res.json({
       ok: true,
       result: {
@@ -644,6 +665,7 @@ app.post("/api/mock-exam/submit", requireAuthorized, (req, res) => {
         wrong: results.length - correct,
         score: Math.round((correct / results.length) * 100),
         weakChapters,
+        analysis,
         questions: results,
       },
     });
@@ -3650,12 +3672,17 @@ async function syncChaptersFromNotion() {
   if (!notion || !config.notion.chapterDbId) {
     throw new Error("NOTION_TOKEN 或 CHAPTER_DATABASE_ID 未配置");
   }
-  const pages = await queryChapterPages();
+  const queriedPages = await queryChapterPages();
+  const pages = queriedPages.filter(
+    (page) => !page.in_trash && !page.is_archived && !page.archived,
+  );
   const result = {
     created: 0,
     updated: 0,
-    hidden: 0,
+    archived: 0,
+    restored: 0,
     kept: 0,
+    skippedInvalid: queriedPages.length - pages.length,
   };
   const notionPageIds = new Set(pages.map((page) => page.id));
   for (const page of pages) {
@@ -3663,27 +3690,30 @@ async function syncChaptersFromNotion() {
     result[action] = (result[action] || 0) + 1;
   }
   const localNotionChapters = all(
-    `SELECT id, notion_page_id, student_visible
+    `SELECT id, notion_page_id, notion_archived
      FROM chapters
      WHERE notion_page_id IS NOT NULL AND notion_page_id != ''`,
   );
   for (const chapter of localNotionChapters) {
     if (notionPageIds.has(chapter.notion_page_id)) {
-      result.kept += 1;
       continue;
     }
-    if (chapter.student_visible) {
+    if (!Number(chapter.notion_archived)) {
       run(
         `UPDATE chapters
-         SET student_visible = 0, status = ?, updated_at = CURRENT_TIMESTAMP
+         SET notion_archived = 1, student_visible = 0, status = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
-        ["Notion 已删除", chapter.id],
+        ["Notion 已删除或归档", chapter.id],
       );
-      result.hidden += 1;
+      result.archived += 1;
     } else {
       result.kept += 1;
     }
   }
+  result.kept += get(
+    `SELECT COUNT(*) AS count FROM chapters
+     WHERE notion_page_id IS NULL OR notion_page_id = ''`,
+  )?.count || 0;
   return result;
 }
 
@@ -3694,14 +3724,16 @@ function upsertChapterFromNotionPage(page) {
   const status = String(propValue(page, "状态") || "待生成").trim() || "待生成";
   const existing = get(`SELECT * FROM chapters WHERE notion_page_id = ?`, [page.id]);
   if (existing) {
+    const action = Number(existing.notion_archived) === 1 ? "restored" : "updated";
     run(
       `UPDATE chapters
-       SET title = ?, chapter_no = ?, section_no = ?, notion_url = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+       SET title = ?, chapter_no = ?, section_no = ?, notion_url = ?, status = ?,
+           notion_archived = 0, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [title, chapterNo, sectionNo, page.url || null, status, existing.id],
     );
     return {
-      action: "updated",
+      action,
       chapter: get(`SELECT * FROM chapters WHERE id = ?`, [existing.id]),
     };
   }
@@ -3809,9 +3841,10 @@ function listChaptersForUser(user) {
 function chapterVisibleSql(user) {
   if (user?.role === "teacher") return { sql: "1=1", params: [] };
   return {
-    sql: `(chapters.student_visible = 1 OR EXISTS (
+    sql: `(COALESCE(chapters.notion_archived, 0) = 0 AND
+           (chapters.student_visible = 1 OR EXISTS (
             SELECT 1 FROM chapter_student_access csa
-            WHERE csa.chapter_id = chapters.id AND csa.student_id = ?))`,
+            WHERE csa.chapter_id = chapters.id AND csa.student_id = ?)))`,
     params: [user.id],
   };
 }
@@ -3819,6 +3852,7 @@ function chapterVisibleSql(user) {
 function canAccessChapter(user, chapter) {
   if (user?.role === "teacher") return true;
   if (!chapter) return false;
+  if (Number(chapter.notion_archived) === 1) return false;
   if (Number(chapter.student_visible) === 1) return true;
   const grant = get(
     `SELECT 1 FROM chapter_student_access
@@ -3837,6 +3871,9 @@ function ensureCanAccessChapter(user, chapterId) {
 }
 
 function assertChapterNotionPage(chapter) {
+  if (Number(chapter?.notion_archived) === 1) {
+    throw new Error("当前 Notion 页面已不存在，无法执行依赖 Notion 的操作");
+  }
   if (!chapter?.notion_page_id) {
     throw new Error("当前章节还没有 Notion 页面 ID，请先创建或同步章节 Notion 页面");
   }
@@ -3875,22 +3912,7 @@ function countNonEmptyLines(value) {
 }
 
 function ensureLocalChapterFromNotionPage(page) {
-  const existing = get(`SELECT * FROM chapters WHERE notion_page_id = ?`, [page.id]);
-  if (existing) return existing;
-  const title = getTitle(page, "未命名章节");
-  const result = run(
-    `INSERT INTO chapters (title, chapter_no, section_no, notion_page_id, notion_url, status)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      title,
-      propValue(page, "章") || "",
-      propValue(page, "节") || "",
-      page.id,
-      page.url || null,
-      propValue(page, "状态") || "待生成",
-    ],
-  );
-  return get(`SELECT * FROM chapters WHERE id = ?`, [result.lastInsertRowid]);
+  return upsertChapterFromNotionPage(page).chapter;
 }
 
 async function chapterFromRawMaterialPage(page) {

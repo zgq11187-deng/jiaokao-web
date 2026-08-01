@@ -69,6 +69,7 @@ function App() {
   const [teachers, setTeachers] = useState([]);
   const [studentChapterListOpen, setStudentChapterListOpen] = useState(false);
   const [teacherChapterListOpen, setTeacherChapterListOpen] = useState(true);
+  const [showArchivedChapters, setShowArchivedChapters] = useState(false);
   const [chapterSortMode, setChapterSortMode] = useState("number");
   const [chapterSearchIndex, setChapterSearchIndex] = useState("");
   const [editingChapterOrder, setEditingChapterOrder] = useState(null);
@@ -91,8 +92,15 @@ function App() {
   const latestTeaching = detail?.teachingPages?.[0] || null;
   const isTeacher = user?.role === "teacher";
   const isAuthorized = isTeacher || user?.authorizationStatus === "approved";
+  const visibleChapters = useMemo(
+    () =>
+      isTeacher && !showArchivedChapters
+        ? chapters.filter((chapter) => Number(chapter.notion_archived) !== 1)
+        : chapters,
+    [chapters, isTeacher, showArchivedChapters],
+  );
   const sortedChapters = useMemo(() => {
-    const sorted = [...chapters];
+    const sorted = [...visibleChapters];
 
     switch (chapterSortMode) {
       case "number":
@@ -115,7 +123,7 @@ function App() {
       default:
         return sorted;
     }
-  }, [chapters, chapterSortMode]);
+  }, [visibleChapters, chapterSortMode]);
 
   const filteredChapters = useMemo(() => {
     if (!chapterSearchIndex.trim()) return sortedChapters;
@@ -128,6 +136,9 @@ function App() {
       return title.includes(searchText) || chapterInfo.includes(searchText);
     });
   }, [sortedChapters, chapterSearchIndex]);
+  const selectedListedChapter = filteredChapters.find(
+    (chapter) => chapter.id === selectedId,
+  );
   const workspaceTitle = isTeacher
     ? selected?.title || "请选择或新建章节"
     : studentPageTitle(routePath, selected);
@@ -179,6 +190,20 @@ function App() {
       setSelectedId(chapters[0].id);
     }
   }, [chapters, routePath, isTeacher]);
+
+  useEffect(() => {
+    if (
+      !isTeacher ||
+      showArchivedChapters ||
+      !selected ||
+      Number(selected.notion_archived) !== 1
+    ) {
+      return;
+    }
+    const nextChapter = sortedChapters[0] || null;
+    setSelectedId(nextChapter?.id || null);
+    if (!nextChapter) setDetail(null);
+  }, [isTeacher, showArchivedChapters, selected?.id, selected?.notion_archived, sortedChapters]);
 
   useEffect(() => {
     if (selectedId && isAuthorized) loadDetail(selectedId);
@@ -297,10 +322,11 @@ function App() {
         method: "POST",
       });
       setChapters(data.chapters || []);
+      setShowArchivedChapters(false);
       const result = data.syncResult;
       if (result) {
         setSyncNotice(
-          `Notion 章节列表同步完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，隐藏 ${result.hidden || 0}，保留 ${result.kept || 0}。`,
+          `Notion 章节列表同步完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，归档 ${result.archived || 0}，恢复 ${result.restored || 0}，保留本地章节 ${result.kept || 0}，跳过无效页面 ${result.skippedInvalid || 0}。归档章节的数据仍保留，可通过“显示已归档”查看。`,
         );
       }
     });
@@ -823,6 +849,14 @@ function App() {
                 {teacherChapterListOpen ? "收起" : "切换"}
               </button>
             ) : null}
+            {isTeacher ? (
+              <button
+                onClick={() => setShowArchivedChapters((visible) => !visible)}
+                title={showArchivedChapters ? "隐藏已归档章节" : "显示已归档章节"}
+              >
+                {showArchivedChapters ? "隐藏已归档" : "显示已归档"}
+              </button>
+            ) : null}
             {!isTeacher && chapters.length > 1 ? (
               <button
                 onClick={() => setStudentChapterListOpen((open) => !open)}
@@ -846,8 +880,8 @@ function App() {
           {(isTeacher
             ? teacherChapterListOpen
               ? filteredChapters
-              : selected
-                ? [selected]
+              : selectedListedChapter
+                ? [selectedListedChapter]
                 : filteredChapters.slice(0, 1)
             : studentChapterListOpen
               ? filteredChapters
@@ -917,15 +951,21 @@ function App() {
                 <div>
                   <strong>{chapter.title}</strong>
                   <span>
-                    {chapter.status || "待生成"}
+                    {describeChapterStatus(chapter)}
                     {isTeacher ? ` · ${describeChapterVisibility(chapter)}` : ""}
                   </span>
                 </div>
               </button>
             );
           })}
-          {!chapters.length ? (
-            <p className="muted">{isTeacher ? "暂无章节。" : "暂无开放章节，请等待老师发布。"}</p>
+          {!filteredChapters.length ? (
+            <p className="muted">
+              {isTeacher && chapters.length && !showArchivedChapters
+                ? "暂无未归档章节。可点击“显示已归档”查看历史数据。"
+                : isTeacher
+                  ? "暂无章节。"
+                  : "暂无开放章节，请等待老师发布。"}
+            </p>
           ) : null}
         </nav>
       </aside>
@@ -1019,6 +1059,11 @@ function describeChapterVisibility(chapter) {
   const count = Number(chapter.student_access_count || 0);
   if (count > 0) return `仅 ${count} 位指定学生可见`;
   return "对所有学生隐藏";
+}
+
+function describeChapterStatus(chapter) {
+  if (Number(chapter?.notion_archived) === 1) return "Notion 已删除/已归档";
+  return chapter?.status || "待生成";
 }
 
 function ChapterAccessPanel({ chapter, access, filter, onFilterChange, onToggleStudent, busy }) {
@@ -1726,6 +1771,8 @@ function TeacherWorkspace(props) {
     setChapterAccessFilter,
     setChapterStudentAccess,
   } = props;
+  const notionArchived = Number(selected?.notion_archived) === 1;
+  const notionActionDisabled = Boolean(busy) || notionArchived;
   const [studentForm, setStudentForm] = useState(emptyAuthForm);
   const [teacherForm, setTeacherForm] = useState(emptyAuthForm);
   const [passwordForm, setPasswordForm] = useState({
@@ -1807,10 +1854,10 @@ function TeacherWorkspace(props) {
             onChange={(event) => setFiles([...event.target.files])}
           />
           <p>{files.length ? `已选择 ${files.length} 个文件` : "支持图片、PDF、CSV、TXT、MD"}</p>
-          <button onClick={uploadRawPage} disabled={Boolean(busy)}>
+          <button onClick={uploadRawPage} disabled={notionActionDisabled}>
             <Sparkles size={16} /> 生成 Markdown 原始页
           </button>
-          <button onClick={createLecturePage} disabled={Boolean(busy)}>
+          <button onClick={createLecturePage} disabled={notionActionDisabled}>
             <FileText size={16} /> 创建 Notion 讲义页
           </button>
           {!codexAgentVisible ? (
@@ -1833,16 +1880,16 @@ function TeacherWorkspace(props) {
           <button className="subtle-button" onClick={() => setCodexAgentVisible(false)} disabled={Boolean(busy)}>
             隐藏
           </button>
-          <button onClick={() => runStep("fill-outline", "A 自动填充考点")} disabled={Boolean(busy)}>
+          <button onClick={() => runStep("fill-outline", "A 自动填充考点")} disabled={notionActionDisabled}>
             A 自动填充考点
           </button>
-          <button onClick={() => runStep("import-exam-questions", "B 真题自动入库")} disabled={Boolean(busy)}>
+          <button onClick={() => runStep("import-exam-questions", "B 真题自动入库")} disabled={notionActionDisabled}>
             B 真题自动入库
           </button>
-          <button onClick={() => runStep("generate-teaching-page", "C 生成教学页")} disabled={Boolean(busy)}>
+          <button onClick={() => runStep("generate-teaching-page", "C 生成教学页")} disabled={notionActionDisabled}>
             C 生成教学页
           </button>
-          <button className="primary" onClick={() => runStep("generate-all", "A/B/C 串联生成")} disabled={Boolean(busy)}>
+          <button className="primary" onClick={() => runStep("generate-all", "A/B/C 串联生成")} disabled={notionActionDisabled}>
             <Sparkles size={16} /> 一键执行 A/B/C
           </button>
         </>
@@ -1857,16 +1904,16 @@ function TeacherWorkspace(props) {
       icon: <Layers size={18} />,
       content: (
         <>
-          <button onClick={() => runStep("deepseek-fill-outline", "DeepSeek A 自动填充考点")} disabled={Boolean(busy)}>
+          <button onClick={() => runStep("deepseek-fill-outline", "DeepSeek A 自动填充考点")} disabled={notionActionDisabled}>
             A 自动填充考点
           </button>
-          <button onClick={() => runStep("deepseek-import-exam-questions", "DeepSeek B 真题自动入库")} disabled={Boolean(busy)}>
+          <button onClick={() => runStep("deepseek-import-exam-questions", "DeepSeek B 真题自动入库")} disabled={notionActionDisabled}>
             B 真题自动入库
           </button>
-          <button onClick={() => runStep("deepseek-generate-teaching-page", "DeepSeek C 生成教学页")} disabled={Boolean(busy)}>
+          <button onClick={() => runStep("deepseek-generate-teaching-page", "DeepSeek C 生成教学页")} disabled={notionActionDisabled}>
             C 生成教学页
           </button>
-          <button className="primary" onClick={() => runStep("deepseek-generate-all", "一键执行 DeepSeek A/B/C")} disabled={Boolean(busy)}>
+          <button className="primary" onClick={() => runStep("deepseek-generate-all", "一键执行 DeepSeek A/B/C")} disabled={notionActionDisabled}>
             <Sparkles size={16} /> 一键执行 DeepSeek A/B/C
           </button>
         </>
@@ -1878,7 +1925,7 @@ function TeacherWorkspace(props) {
       icon: <ClipboardList size={18} />,
       content: (
         <>
-          <button onClick={syncCurrentTeachingPageFromNotion} disabled={Boolean(busy)}>
+          <button onClick={syncCurrentTeachingPageFromNotion} disabled={notionActionDisabled}>
             <RefreshCw size={16} /> 同步当前章节教学页
           </button>
           <button
@@ -2168,17 +2215,23 @@ function TeacherWorkspace(props) {
 
       {selected ? (
         <>
+          {notionArchived ? (
+            <section className="chapter-archive-notice">
+              <strong>Notion 已删除/已归档</strong>
+              <span>历史教学页和题库仍可查看；当前 Notion 页面已不存在，无法重新同步教学页或执行依赖 Notion 的操作。</span>
+            </section>
+          ) : null}
           <section className="chapter-publish-panel">
             <div>
               <strong>章节开放范围</strong>
               <span>{describeChapterVisibility(selected)}</span>
             </div>
             {selected.student_visible ? (
-              <button onClick={() => updateChapterVisibility(selected.id, false)} disabled={Boolean(busy)}>
+              <button onClick={() => updateChapterVisibility(selected.id, false)} disabled={Boolean(busy) || notionArchived}>
                 对所有学生关闭
               </button>
             ) : (
-              <button className="primary" onClick={() => updateChapterVisibility(selected.id, true)} disabled={Boolean(busy)}>
+              <button className="primary" onClick={() => updateChapterVisibility(selected.id, true)} disabled={Boolean(busy) || notionArchived}>
                 开放给所有学生
               </button>
             )}
@@ -2189,7 +2242,7 @@ function TeacherWorkspace(props) {
             filter={chapterAccessFilter}
             onFilterChange={setChapterAccessFilter}
             onToggleStudent={setChapterStudentAccess}
-            busy={busy}
+            busy={busy || notionArchived}
           />
           <section className="flow-grid">
             {flowCards.map((card, index) => (
@@ -3097,6 +3150,7 @@ function WrongQuestionCard({ question, index }) {
 }
 
 function MockResult({ result }) {
+  const analysis = result.analysis;
   return (
     <section className="mock-result">
       <div>
@@ -3114,7 +3168,73 @@ function MockResult({ result }) {
       ) : (
         <p>本次没有明显薄弱章节。</p>
       )}
+      {analysis ? <MockAnalysis analysis={analysis} /> : null}
     </section>
+  );
+}
+
+function MockAnalysis({ analysis }) {
+  const summary = analysis.summary || {};
+  const pointStats = analysis.pointStats || analysis.weakKnowledgeTags || [];
+  const weaknesses = analysis.weakPoints?.length
+    ? analysis.weakPoints.map((item) => `${item.name}（正确率 ${item.accuracy}%）`)
+    : pointStats.filter((item) => item.accuracy < 85 && item.wrong > 0).map((item) => `${item.name}（正确率 ${item.accuracy}%）`);
+  const suggestions = analysis.aiSuggestions?.length ? analysis.aiSuggestions : analysis.suggestions || [];
+  const nextPractice = analysis.nextPractice || [];
+  const providerName = analysis.provider === "codex-luna" ? "Codex Luna" : analysis.provider === "deepseek" ? "DeepSeek" : "基础统计";
+  const basis = analysis.basis || {};
+  return (
+    <div className="mock-analysis">
+      <div className="mock-analysis-heading">
+        <strong>本次成绩分析</strong>
+        <span>{providerName}</span>
+      </div>
+      <p className="mock-analysis-basis">
+        分析依据：{basis.newOutline ? "新大纲考点" : "题目标签"}、{basis.keyPoints ? "重点" : "题目表现"}、{basis.hardPoints ? "难点" : "作答结果"}及本次作答结果
+      </p>
+      <p className="mock-analysis-summary">
+        {analysis.aiSummary || `${summary.level || "学习诊断"}：${summary.message || "建议结合错题继续练习。"}`}
+      </p>
+      {weaknesses.length ? (
+        <p><strong>薄弱考点：</strong>{weaknesses.join("、")}</p>
+      ) : null}
+      {suggestions.length ? (
+        <ul>
+          {suggestions.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+        </ul>
+      ) : null}
+      {nextPractice.length ? (
+        <details className="mock-analysis-details">
+          <summary>查看下一步练习</summary>
+          <ul>
+            {nextPractice.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+          </ul>
+        </details>
+      ) : null}
+      {pointStats.length ? (
+        <details className="mock-analysis-details">
+          <summary>查看考点掌握明细</summary>
+          <div className="mock-stat-grid">
+            {pointStats.map((item) => (
+              <span key={`point-${item.name}`}>{item.name}：{item.correct}/{item.total}（{item.accuracy}%，{item.status || "需要复盘"}）</span>
+            ))}
+          </div>
+        </details>
+      ) : null}
+      {analysis.pointMapping?.length ? (
+        <details className="mock-analysis-details">
+          <summary>查看错题对应考点</summary>
+          <div className="mock-stat-grid">
+            {analysis.pointMapping
+              .filter((item) => item.points?.length)
+              .map((item) => (
+                <span key={`mapping-${item.questionId}`}>第 {item.questionId} 题：{item.points.join("、")}</span>
+              ))}
+          </div>
+        </details>
+      ) : null}
+      {analysis.fallbackReason ? <p className="mock-analysis-fallback">{analysis.fallbackReason}</p> : null}
+    </div>
   );
 }
 

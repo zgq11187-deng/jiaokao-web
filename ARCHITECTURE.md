@@ -76,7 +76,7 @@ project/
 
 现有核心表：
 
-- `chapters`：章节，包含 `student_visible` 控制是否对所有学生开放
+- `chapters`：章节，包含 `notion_archived` 与 `student_visible` 两个独立状态。`notion_archived` 记录关联 Notion 页面是否仍有效；`student_visible` 只控制是否对所有学生开放。
 - `chapter_student_access`：章节到学生的指定授权关系（PK = chapter_id + student_id），用于在未对所有学生开放时按学生粒度授权
 - `raw_pages`：Qwen 生成的 Markdown 原始页
 - `outline_analyses`：A 自动填充考点结果
@@ -136,9 +136,9 @@ project/
 
 主要 API 分组：
 
-- `GET /api/chapters`：章节列表；老师返回全部本地章节，学生只返回对自己可见的章节（`student_visible = 1` 或在 `chapter_student_access` 中有授权）
+- `GET /api/chapters`：章节列表；老师可取得全部本地章节，老师端默认隐藏 `notion_archived = 1` 且可主动显示；学生只返回未归档且对自己可见的章节（`student_visible = 1` 或在 `chapter_student_access` 中有授权）
 - `GET /api/chapters/:id`：章节详情
-- `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；只同步章节元数据，Notion 已删除章节先对所有学生隐藏（保留 per-student 授权），不读取页面正文，不导入习题
+- `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；完整分页后排除回收站和已归档页面，并对账本地 Notion 来源章节。失效页面设为 `notion_archived = 1`、关闭 `student_visible`、保留指定学生授权和全部历史数据；恢复页面只清除归档状态并更新元数据，不自动重新开放给学生。接口返回新增、更新、归档、恢复、保留和跳过无效页面统计。
 - `POST /api/teacher/chapters/:id/sync-teaching-page-from-notion`：老师手动同步当前章节 Notion 页面正文到本地教学页缓存
 - `POST /api/teacher/chapters/:id/show-to-students`：老师将章节开放给所有学生
 - `POST /api/teacher/chapters/:id/hide-from-students`：老师关闭对所有学生的开放（不影响指定学生授权）
@@ -194,11 +194,11 @@ project/
 
 既有 Notion Agent 内容同步链路：
 
-- 老师先点击“同步 Notion 章节列表”，只更新本地章节列表，避免全量读取正文导致请求超时
+- 老师先点击“同步 Notion 章节列表”，只更新本地章节列表，避免全量读取正文导致请求超时；Notion 失效章节只归档，不物理删除本地教学页、题库、答题记录或指定学生授权
 - 老师选中当前章节后点击“同步当前章节教学页”，后端只读取该章节 Notion 页面正文并写入 `teaching_pages`
 - 老师点击“导入当前章节习题”，后端只读取当前章节最新教学页中的双边界内容并写入 `exam_questions`：`历年真题演练开始` / `历年真题演练结束` 内按历年真题类来源处理，`模拟题开始` / `模拟题结束` 内按模拟题类来源处理；边界外的课堂提问、讲解示例、自编题和说明文字暂不进入网页题库；接口按题型返回解析、新增、更新、跳过统计
 - 当前阶段 Notion 教学页导入题按边界区分历年真题和模拟题来源；操作题允许没有选项，答案保存为“按步骤评分”，参考步骤保存到解析
-- 学生端只读取本地已开放章节、教学页和题库，不直接调用 Notion
+- 学生端只读取本地已开放且 `notion_archived = 0` 的章节、教学页和题库，不直接调用 Notion；即使曾被指定授权，也不能通过旧 URL 访问归档章节。老师可显示归档章节查看历史数据，但依赖 Notion 的操作会被阻止。
 
 Logseq 版 Notion Agent 触发链路：
 
