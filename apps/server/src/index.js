@@ -3668,6 +3668,41 @@ function clampInt(value, min, max, fallback) {
   return Math.min(max, Math.max(min, parsed));
 }
 
+function normalizeChapterTitleForMatch(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function buildNotionChapterTitleIndex(pages) {
+  const titleIndex = new Map();
+  for (const page of pages) {
+    const title = normalizeChapterTitleForMatch(getTitle(page, ""));
+    if (!title) continue;
+    const matches = titleIndex.get(title) || [];
+    matches.push(page);
+    titleIndex.set(title, matches);
+  }
+  return titleIndex;
+}
+
+function buildTitleOnlyChapterIndex() {
+  const titleIndex = new Map();
+  const chapters = all(
+    `SELECT id, title, notion_archived
+     FROM chapters
+     WHERE notion_page_id IS NULL OR trim(notion_page_id) = ''`,
+  );
+  for (const chapter of chapters) {
+    const title = normalizeChapterTitleForMatch(chapter.title);
+    const matches = titleIndex.get(title) || [];
+    matches.push(chapter);
+    titleIndex.set(title, matches);
+  }
+  return titleIndex;
+}
+
 async function syncChaptersFromNotion() {
   if (!notion || !config.notion.chapterDbId) {
     throw new Error("NOTION_TOKEN 或 CHAPTER_DATABASE_ID 未配置");
@@ -3682,17 +3717,26 @@ async function syncChaptersFromNotion() {
     archived: 0,
     restored: 0,
     kept: 0,
+    titleBound: 0,
+    skippedTitleAmbiguous: 0,
     skippedInvalid: queriedPages.length - pages.length,
   };
   const notionPageIds = new Set(pages.map((page) => page.id));
+  const titleIndex = buildNotionChapterTitleIndex(pages);
+  const titleOnlyChapterIndex = buildTitleOnlyChapterIndex();
   for (const page of pages) {
-    const { action } = upsertChapterFromNotionPage(page);
+    const { action, titleBound } = upsertChapterFromNotionPage(
+      page,
+      titleIndex,
+      titleOnlyChapterIndex,
+    );
     result[action] = (result[action] || 0) + 1;
+    result.titleBound += titleBound || 0;
   }
   const localNotionChapters = all(
     `SELECT id, notion_page_id, notion_archived
      FROM chapters
-     WHERE notion_page_id IS NOT NULL AND notion_page_id != ''`,
+     WHERE notion_page_id IS NOT NULL AND trim(notion_page_id) != ''`,
   );
   for (const chapter of localNotionChapters) {
     if (notionPageIds.has(chapter.notion_page_id)) {
@@ -3710,14 +3754,48 @@ async function syncChaptersFromNotion() {
       result.kept += 1;
     }
   }
-  result.kept += get(
-    `SELECT COUNT(*) AS count FROM chapters
-     WHERE notion_page_id IS NULL OR notion_page_id = ''`,
-  )?.count || 0;
+  const localTitleOnlyChapters = all(
+    `SELECT id, title, notion_archived
+     FROM chapters
+     WHERE notion_page_id IS NULL OR trim(notion_page_id) = ''`,
+  );
+  for (const chapter of localTitleOnlyChapters) {
+    const normalizedTitle = normalizeChapterTitleForMatch(chapter.title);
+    const matches = normalizedTitle ? titleIndex.get(normalizedTitle) || [] : [];
+    if (matches.length > 1) {
+      result.skippedTitleAmbiguous += 1;
+      result.kept += 1;
+      continue;
+    }
+    if (matches.length === 1) {
+      const linkedChapter = get(
+        `SELECT id FROM chapters WHERE notion_page_id = ?`,
+        [matches[0].id],
+      );
+      if (linkedChapter && Number(linkedChapter.id) !== Number(chapter.id)) {
+        result.skippedTitleAmbiguous += 1;
+        result.kept += 1;
+      } else if (!linkedChapter) {
+        result.kept += 1;
+      }
+      continue;
+    }
+    if (!Number(chapter.notion_archived)) {
+      run(
+        `UPDATE chapters
+         SET notion_archived = 1, student_visible = 0, status = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        ["Notion 已删除或归档", chapter.id],
+      );
+      result.archived += 1;
+    } else {
+      result.kept += 1;
+    }
+  }
   return result;
 }
 
-function upsertChapterFromNotionPage(page) {
+function upsertChapterFromNotionPage(page, titleIndex, titleOnlyChapterIndex) {
   const title = getTitle(page, "未命名章节").trim() || "未命名章节";
   const chapterNo = String(propValue(page, "章") || "").trim();
   const sectionNo = String(propValue(page, "节") || "").trim();
@@ -3734,7 +3812,31 @@ function upsertChapterFromNotionPage(page) {
     );
     return {
       action,
+      titleBound: 0,
       chapter: get(`SELECT * FROM chapters WHERE id = ?`, [existing.id]),
+    };
+  }
+  const normalizedTitle = normalizeChapterTitleForMatch(title);
+  const titleMatches = titleIndex?.get(normalizedTitle) || [];
+  const titleOnlyChapters = titleOnlyChapterIndex?.get(normalizedTitle) || [];
+  const titleOnlyChapter =
+    titleMatches.length === 1 && titleOnlyChapters.length === 1
+      ? titleOnlyChapters[0]
+      : null;
+  if (titleOnlyChapter) {
+    titleOnlyChapterIndex.delete(normalizedTitle);
+    const action = Number(titleOnlyChapter.notion_archived) === 1 ? "restored" : "updated";
+    run(
+      `UPDATE chapters
+       SET title = ?, chapter_no = ?, section_no = ?, notion_page_id = ?, notion_url = ?, status = ?,
+           notion_archived = 0, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [title, chapterNo, sectionNo, page.id, page.url || null, status, titleOnlyChapter.id],
+    );
+    return {
+      action,
+      titleBound: 1,
+      chapter: get(`SELECT * FROM chapters WHERE id = ?`, [titleOnlyChapter.id]),
     };
   }
   const result = run(
@@ -3744,6 +3846,7 @@ function upsertChapterFromNotionPage(page) {
   );
   return {
     action: "created",
+    titleBound: 0,
     chapter: get(`SELECT * FROM chapters WHERE id = ?`, [result.lastInsertRowid]),
   };
 }

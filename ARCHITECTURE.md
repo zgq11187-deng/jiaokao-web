@@ -76,7 +76,7 @@ project/
 
 现有核心表：
 
-- `chapters`：章节，包含 `notion_archived` 与 `student_visible` 两个独立状态。`notion_archived` 记录关联 Notion 页面是否仍有效；`student_visible` 只控制是否对所有学生开放。
+- `chapters`：章节，包含 `notion_archived` 与 `student_visible` 两个独立状态。`notion_archived` 记录 Notion 来源生命周期，空 `notion_page_id` 记录也会按规范化标题参与同步对账；`student_visible` 只控制是否对所有学生开放。
 - `chapter_student_access`：章节到学生的指定授权关系（PK = chapter_id + student_id），用于在未对所有学生开放时按学生粒度授权
 - `raw_pages`：Qwen 生成的 Markdown 原始页
 - `outline_analyses`：A 自动填充考点结果
@@ -138,7 +138,7 @@ project/
 
 - `GET /api/chapters`：章节列表；老师可取得全部本地章节，老师端默认隐藏 `notion_archived = 1` 且可主动显示；学生只返回未归档且对自己可见的章节（`student_visible = 1` 或在 `chapter_student_access` 中有授权）
 - `GET /api/chapters/:id`：章节详情
-- `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；完整分页后排除回收站和已归档页面，并对账本地 Notion 来源章节。失效页面设为 `notion_archived = 1`、关闭 `student_visible`、保留指定学生授权和全部历史数据；恢复页面只清除归档状态并更新元数据，不自动重新开放给学生。接口返回新增、更新、归档、恢复、保留和跳过无效页面统计。
+- `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；完整分页后排除回收站和已归档页面，并对账本地 Notion 来源章节及空 `notion_page_id` 的本地记录。空 ID 记录按规范化标题唯一匹配有效页面，匹配成功时补写来源元数据，匹配不到时设为 `notion_archived = 1`、关闭 `student_visible`；同名页面跳过绑定并返回歧义统计。失效页面保留指定学生授权和全部历史数据；恢复页面只清除归档状态并更新元数据，不自动重新开放给学生。接口返回新增、更新、归档、恢复、保留、标题绑定、跳过同名标题和跳过无效页面统计。部署前需确认空 ID 本地章节均应纳入 Notion 管理。
 - `POST /api/teacher/chapters/:id/sync-teaching-page-from-notion`：老师手动同步当前章节 Notion 页面正文到本地教学页缓存
 - `POST /api/teacher/chapters/:id/show-to-students`：老师将章节开放给所有学生
 - `POST /api/teacher/chapters/:id/hide-from-students`：老师关闭对所有学生的开放（不影响指定学生授权）
@@ -157,6 +157,7 @@ project/
 - `POST /api/teacher/questions/:id/archive`：老师隐藏题目，不物理删除历史答题记录
 - `POST /api/teacher/questions/:id/restore`：老师恢复已隐藏题目
 - `POST /api/chapters/:id/generate-teaching-page`：Codex Agent C 生成教学页
+- `POST /api/mock-exam/submit`：提交模拟考试；服务端读取当前章节的新大纲考点、重点、难点和逐题作答结果，使用 `MOCK_ANALYSIS_PROVIDER` 指定的分析引擎生成成绩总结和练习建议。当前引擎为 Codex Luna（OpenAI 模型 ID `gpt-5.6-luna`），DeepSeek 预留同一接口。分数和考点统计由后端校验计算，模型失败时返回规则分析兜底，不持久化分析结果。
 - `POST /api/chapters/:id/deepseek-generate-teaching-page`：DeepSeek Agent C 生成教学页，默认使用 `DEEPSEEK_TEACHING_MODEL=deepseek-chat` 避免推理模型把输出耗在 `reasoning_content` 上，同时使用更大的 `DEEPSEEK_TEACHING_MAX_TOKENS` 输出上限，生成后仍是待人工检查的草稿
 - `POST /api/chapters/:id/generate-all`：串联执行 A/B/C
 - `POST /api/notion-agent/scan-triggers`：老师手动扫描 Notion 复选框触发项，并执行 A/B/C
@@ -234,6 +235,17 @@ QWEN_API_KEY=
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_VISION_MODEL=qwen3-vl-flash
 QWEN_TEXT_MODEL=qwen3-vl-flash
+
+# 模拟考试成绩分析（密钥只在服务端）
+MOCK_ANALYSIS_PROVIDER=codex-luna
+CODEX_LUNA_API_KEY=
+CODEX_LUNA_BASE_URL=https://api.openai.com/v1
+CODEX_LUNA_MODEL=gpt-5.6-luna
+CODEX_LUNA_TIMEOUT_MS=12000
+DEEPSEEK_ANALYSIS_API_KEY=
+DEEPSEEK_ANALYSIS_BASE_URL=https://api.deepseek.com
+DEEPSEEK_ANALYSIS_MODEL=deepseek-chat
+DEEPSEEK_ANALYSIS_TIMEOUT_MS=12000
 
 CODEX_BIN=/Applications/Codex.app/Contents/Resources/codex
 CODEX_MODEL=

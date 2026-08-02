@@ -32,7 +32,7 @@
 
 - **2026-08-01**：使用 `notion_archived`，而非人工回收站的 `deleted_at/deleted_by`，因为本迭代只表达 Notion 来源是否有效。
 - **2026-08-01**：归档时强制关闭 `student_visible`，但保留 `chapter_student_access`；恢复时不自动重新开放，避免错误发布。
-- **2026-08-01**：以有效 Notion 页面集合对账；本地手动章节没有 `notion_page_id`，不参与归档判断。
+- **2026-08-02**：空 `notion_page_id` 章节按 Unicode NFKC、连续空白合并和首尾空白清理后的标题参与对账；唯一匹配时复用本地记录，匹配不到时归档，同名页面不自动选择。该规则要求部署前确认空 ID 本地章节均应纳入 Notion 管理。
 
 ## Open Questions
 
