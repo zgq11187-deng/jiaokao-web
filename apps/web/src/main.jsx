@@ -326,7 +326,7 @@ function App() {
       const result = data.syncResult;
       if (result) {
         setSyncNotice(
-          `Notion 章节列表同步完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，归档 ${result.archived || 0}，恢复 ${result.restored || 0}，保留本地章节 ${result.kept || 0}，跳过无效页面 ${result.skippedInvalid || 0}。归档章节的数据仍保留，可通过“显示已归档”查看。`,
+          `Notion 章节列表同步完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，标题绑定 ${result.titleBound || 0}，归档 ${result.archived || 0}，恢复 ${result.restored || 0}，保留本地章节 ${result.kept || 0}，同名跳过 ${result.skippedTitleAmbiguous || 0}，跳过无效页面 ${result.skippedInvalid || 0}。归档章节的数据仍保留，可通过“显示已归档”查看。`,
         );
       }
     });

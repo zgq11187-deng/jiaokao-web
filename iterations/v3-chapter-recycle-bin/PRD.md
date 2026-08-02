@@ -14,13 +14,15 @@
 
 ## 数据与同步规则
 
-- `chapters.notion_archived`：`0` 表示 Notion 页面仍有效，或这是本地手动章节；`1` 表示关联 Notion 页面已删除或已归档。
+- `chapters.notion_archived`：`0` 表示 Notion 页面仍有效，或这是尚未完成来源匹配的本地章节；`1` 表示关联 Notion 页面已删除或已归档。
 - `notion_archived` 不替代 `student_visible`：前者是来源生命周期，后者是面向所有学生的发布范围；指定学生授权仍存于 `chapter_student_access`。
 - Notion 查询保留完整分页；同步时排除 `in_trash = true` 与 `is_archived = true` 的页面，并计入“跳过无效页面”。
 - 每个有效 Notion 页面同步后更新标题、章、节、URL、状态并设为 `notion_archived = 0`。若原先已归档，计入“恢复”；恢复不改变 `student_visible` 或指定学生授权。
 - 关联 `notion_page_id` 的本地章节若不在有效 Notion 页面集合中，设为 `notion_archived = 1`、`student_visible = 0`、状态为“Notion 已删除或归档”；不删除教学页、题库、答题记录或授权关系。
-- `notion_page_id` 为空的本地手动章节永不参与上述归档对账。
-- 同步结果返回新增、更新、归档、恢复、保留本地章节和跳过无效页面数量。
+- `notion_page_id` 为空的本地章节也参与标题对账：标题规范化后唯一匹配有效 Notion 页面时补写页面 ID、URL、章、节和状态；匹配不到时按失效页面归档。该规则会把原本未标记来源的本地手动章节视为 Notion 来源，部署前需确认本地空 ID 章节均应纳入 Notion 管理。
+- 标题规范化只做 Unicode NFKC、连续空白合并和首尾空白清理，不移除连接符或其他实质字符；同名多个有效页面时跳过绑定并返回歧义统计，不自动选择页面。
+- Notion 页面恢复后可按标题重新绑定并清除归档状态；恢复不改变 `student_visible` 或指定学生授权。
+- 同步结果返回新增、更新、归档、恢复、保留本地章节、标题绑定、跳过同名标题和跳过无效页面数量。
 
 ## 老师端
 
@@ -46,5 +48,5 @@
 - Notion 删除或归档章节同步后从默认老师列表消失，打开“显示已归档”可查看。
 - 归档章节的教学页、题库和答题记录仍存在；学生列表和旧 URL 均无法访问。
 - Notion 页面恢复后章节重新显示，但学生开放范围不被自动修改。
-- 本地手动章节不会被归档；回收站和已归档 Notion 页面不被导入。
+- 空 `notion_page_id` 章节按标题参与来源对账；回收站和已归档 Notion 页面不被导入，同名歧义章节不自动绑定。
 - `npm run check` 与 `npm run build` 通过。
