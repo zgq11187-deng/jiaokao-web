@@ -48,9 +48,7 @@ export const config = {
     },
   },
   codex: {
-    bin:
-      process.env.CODEX_BIN ||
-      "/Applications/Codex.app/Contents/Resources/codex",
+    bin: resolveCodexBin(),
     model: process.env.CODEX_MODEL || "",
     timeoutMs: Number(process.env.CODEX_TIMEOUT_MS || 600000),
   },
@@ -64,6 +62,34 @@ export const config = {
     teachingMaxTokens: Number(process.env.DEEPSEEK_TEACHING_MAX_TOKENS || 12000),
   },
 };
+
+function resolveCodexBin() {
+  const configured = String(process.env.CODEX_BIN || "").trim();
+  if (configured) return configured;
+
+  const pathBin = String(process.env.PATH || "")
+    .split(path.delimiter)
+    .map((directory) => directory.trim())
+    .filter(Boolean)
+    .map((directory) => path.join(directory, "codex"))
+    .find(isExecutableFile);
+  if (pathBin) return pathBin;
+
+  const appBins = [
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
+  ];
+  return appBins.find(isExecutableFile) || "codex";
+}
+
+function isExecutableFile(filePath) {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function ensureRuntimeDirs() {
   fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });

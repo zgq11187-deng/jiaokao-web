@@ -2332,13 +2332,19 @@ function buildQuestionGroups(questions = []) {
 function formatTeachingQuestionImportNotice(data = {}) {
   const stats = data.byType || {};
   const order = ["single", "multiple", "judge", "short", "operation"];
+  const sourceLabel =
+    data.source === "notion-page"
+      ? "当前 Notion 页面"
+      : data.source === "local-teaching-page"
+        ? "本地教学页回退"
+        : "未确定来源";
   const details = order
     .map((key) => stats[key])
     .filter(Boolean)
     .map((item) => `${item.label} ${item.parsed || 0} 题 / 新增 ${item.imported || 0} / 更新 ${item.updated || 0}`)
     .join("；");
   const warningText = data.warnings?.length ? `；提示：${data.warnings.join("；")}` : "";
-  return `当前章节习题导入完成：本次只导入“历年真题演练开始/结束”和“模拟题开始/结束”边界内题目。解析 ${data.parsed || 0}，新增 ${data.imported || 0}，更新 ${data.updated || 0}，跳过 ${data.skipped || 0}${details ? `。${details}` : ""}${warningText}`;
+  return `当前章节习题导入完成（读取来源：${sourceLabel}）：本次只导入显式“历年真题演练开始/结束”或“模拟题开始/结束”范围，以及兼容的题库章节标题范围内题目。解析 ${data.parsed || 0}，新增 ${data.imported || 0}，更新 ${data.updated || 0}，跳过 ${data.skipped || 0}${details ? `。${details}` : ""}${warningText}`;
 }
 
 function emptyQuestionDraft(chapterTitle = "") {
