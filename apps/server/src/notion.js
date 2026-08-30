@@ -413,7 +413,8 @@ export async function readPageMarkdown(pageId) {
 }
 
 async function readBlockChildrenMarkdown(client, blockId, depth = 0) {
-  if (depth > 4) return "";
+  // 教学页常见“列 → callout → 题目卡 → 答案折叠”多层嵌套，保留足够深度才能读到边界内题目。
+  if (depth > 8) return "";
   const blocks = [];
   let cursor;
   do {
@@ -471,7 +472,9 @@ async function blockToMarkdown(client, block, depth) {
     return `<columns>\n${columns.map((column) => `<column>\n${column}\n</column>`).join("\n")}\n</columns>`;
   }
   if (type === "column") return readNestedChildren(client, block, depth);
-  if (!text) return "";
+  // 同步块等容器本身没有 rich_text，但其子块仍可能包含完整教学页。
+  // 不要因为父块无文字就丢弃整个子树，否则边界和题目都会无法导入。
+  if (!text && !block.has_children) return "";
   return withChildren(client, block, text, depth);
 }
 
@@ -486,7 +489,7 @@ async function readNestedChildren(client, block, depth) {
 }
 
 async function readNestedBlocks(client, block, depth) {
-  if (!block.has_children || depth > 4) return [];
+  if (!block.has_children || depth > 8) return [];
   const blocks = [];
   let cursor;
   do {

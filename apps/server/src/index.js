@@ -1802,11 +1802,33 @@ async function importTeachingQuestions(chapter) {
   const warnings = [];
   try {
     logStep(chapter.id, "import-teaching-questions", "running", "导入当前章节习题");
-    const { markdown, source } = await loadTeachingQuestionSource(chapter);
+    const sourceResult = await loadTeachingQuestionSource(chapter);
+    let { markdown, source } = sourceResult;
     if (!markdown.trim()) {
       throw new Error("未找到可读取的教学页正文，无法导入自编题");
     }
-    const parsed = parseTeachingQuestions(markdown, chapter, warnings);
+    let parseWarnings = [];
+    let parsed = parseTeachingQuestions(markdown, chapter, parseWarnings);
+    if (!parsed.questions.length && sourceResult.fallbackMarkdown?.trim()) {
+      const fallbackWarnings = [];
+      const fallbackParsed = parseTeachingQuestions(
+        sourceResult.fallbackMarkdown,
+        chapter,
+        fallbackWarnings,
+      );
+      if (fallbackParsed.questions.length) {
+        warnings.push(
+          `当前来源“${source}”未解析到题目，已回退到“${sourceResult.fallbackSource}”`,
+        );
+        markdown = sourceResult.fallbackMarkdown;
+        source = sourceResult.fallbackSource;
+        parsed = fallbackParsed;
+        parseWarnings = fallbackWarnings;
+      } else {
+        parseWarnings.push(...fallbackWarnings);
+      }
+    }
+    warnings.push(...(sourceResult.warnings || []), ...parseWarnings);
     const byType = createQuestionTypeStats();
     if (!parsed.questions.length) {
       const boundaryWarning = warnings.find((warning) => warning.includes("真题/模拟题导入边界"));
@@ -1830,7 +1852,12 @@ async function importTeachingQuestions(chapter) {
         );
         return result;
       }
-      throw new Error("未在“历年真题演练开始/结束”或“模拟题开始/结束”边界内解析到题目，请检查边界标记和题目格式");
+      const parseHint = [...new Set(
+        warnings.filter((warning) => /边界|题库型区块|读取 Notion/.test(warning)),
+      )].join("；");
+      throw new Error(
+        `未在“历年真题演练开始/结束”或“模拟题开始/结束”边界内解析到题目，请检查边界标记和题目格式${parseHint ? `。${parseHint}` : ""}`,
+      );
     }
     let imported = 0;
     let updated = 0;
@@ -1909,14 +1936,46 @@ async function loadTeachingQuestionSource(chapter) {
   );
   const localMarkdown = latest?.markdown || "";
   let notionMarkdown = "";
+  let notionReadError = "";
   if (chapter.notion_page_id && notion) {
-    notionMarkdown = await readPageMarkdown(chapter.notion_page_id).catch(() => "");
+    try {
+      notionMarkdown = await readPageMarkdown(chapter.notion_page_id);
+    } catch (error) {
+      notionReadError = error?.message || "未知错误";
+    }
   }
   const localScore = teachingQuestionSourceScore(localMarkdown);
   const notionScore = teachingQuestionSourceScore(notionMarkdown);
-  if (notionScore > localScore) return { markdown: notionMarkdown, source: "notion-page" };
-  if (localScore > 0 || localMarkdown.trim()) return { markdown: localMarkdown, source: "local-teaching-page" };
-  return { markdown: notionMarkdown, source: notionMarkdown ? "notion-page" : "none" };
+  const localBoundaryScore = teachingQuestionBoundaryScore(localMarkdown);
+  const notionBoundaryScore = teachingQuestionBoundaryScore(notionMarkdown);
+  const notionSource = { markdown: notionMarkdown, source: "notion-page" };
+  const localSource = { markdown: localMarkdown, source: "local-teaching-page" };
+  let selected = { markdown: "", source: "none" };
+
+  // Notion 是当前章节正文的事实来源；只要读到了可识别的题库范围，优先使用它。
+  // 本地页仍作为回退，避免 Notion 临时限流或当前页格式异常时破坏历史导入能力。
+  if (notionMarkdown.trim() && notionBoundaryScore > 0) {
+    selected = notionSource;
+  } else if (localMarkdown.trim() && localBoundaryScore > 0) {
+    selected = localSource;
+  } else if (notionScore > localScore && notionMarkdown.trim()) {
+    selected = notionSource;
+  } else if (localMarkdown.trim()) {
+    selected = localSource;
+  } else if (notionMarkdown.trim()) {
+    selected = notionSource;
+  }
+
+  const fallback = selected.source === "notion-page" ? localSource : notionSource;
+  const warnings = notionReadError
+    ? [`读取 Notion 章节正文失败，已使用本地教学页或保留现有内容：${notionReadError}`]
+    : [];
+  return {
+    ...selected,
+    warnings,
+    fallbackMarkdown: fallback.markdown,
+    fallbackSource: fallback.source,
+  };
 }
 
 function createQuestionTypeStats() {
@@ -1950,8 +2009,18 @@ function teachingQuestionSourceScore(markdown) {
   const text = String(markdown || "");
   const markers = getTeachingQuestionSectionMarkers();
   const markerScore = markers.reduce((score, marker) => score + (text.includes(marker) ? 8 : 0), 0);
-  const questionScore = (text.match(/<details\b|答案与解析|参考答案|^[\s\t]*\d+[.、]\s+/gm) || []).length;
+  const questionScore = (text.match(/<details\b|答案与解析|参考答案|^[\s\t]*\d+[.．、]\s+/gm) || []).length;
   return markerScore + questionScore;
+}
+
+function teachingQuestionBoundaryScore(markdown) {
+  const normalized = normalizeTeachingQuestionMarkdown(markdown);
+  let score = 0;
+  for (const line of normalized.split(/\r?\n/)) {
+    if (detectQuestionBlockStart(line) || detectImplicitQuestionSectionStart(line)) score |= 1;
+    if (detectQuestionBlockEnd(line)) score |= 2;
+  }
+  return score;
 }
 
 function getTeachingQuestionSectionMarkers() {
@@ -2072,11 +2141,15 @@ function parseTeachingQuestions(markdown, chapter, warnings = []) {
       const questionStart = parseTeachingQuestionStart(line);
       if (questionStart && (currentType || hasImportableScope)) {
         finishCurrent();
-        const stem = questionStart[2].trim();
+        const rawStem = questionStart[2].trim();
+        const cardMeta = parseQuestionCardMetadata(rawStem);
+        const stem = cardMeta.stem || rawStem;
+        const metaType = inferQuestionTypeFromMeta(questionStart[3]);
         current = {
           number: questionStart[1],
           meta: questionStart[3] || "",
-          type: inferQuestionTypeFromStem(stem, currentType || "单选题"),
+          type: cardMeta.type || metaType || inferQuestionTypeFromStem(stem, currentType || "单选题"),
+          difficulty: cardMeta.difficulty || "",
           sourceKind: currentSourceKind,
           stemLines: [stem],
           options: [],
@@ -2147,6 +2220,8 @@ function isExcludedTeachingQuestionLine(line) {
 
 function normalizeTeachingSectionLine(line) {
   return String(line || "")
+    .normalize("NFKC")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
     .replace(/^#+\s*/, "")
     .replace(/[*_`]/g, "")
     .replace(/[🎯💡📌🆕🔹▪️📝✅🛠️🔧]/gu, "")
@@ -2156,6 +2231,7 @@ function normalizeTeachingSectionLine(line) {
 
 function normalizeTeachingQuestionMarkdown(markdown) {
   return String(markdown || "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
     .replace(/\\</g, "<")
     .replace(/\\>/g, ">")
     .replace(/\\\|/g, "|")
@@ -2183,10 +2259,12 @@ function extractExplicitQuestionBlocks(markdown, warnings = []) {
   const lines = String(markdown || "").split(/\r?\n/);
   const blocks = [];
   let current = null;
+  let sawExplicitBoundary = false;
   for (const line of lines) {
     const startKind = detectQuestionBlockStart(line);
     const endKind = detectQuestionBlockEnd(line);
     if (startKind) {
+      sawExplicitBoundary = true;
       if (current?.lines?.length) {
         blocks.push(current);
         warnings.push(`检测到新的“${questionBlockStartLabel(startKind)}”，上一段未遇到结束标记，已按边界前内容导入`);
@@ -2195,6 +2273,7 @@ function extractExplicitQuestionBlocks(markdown, warnings = []) {
       continue;
     }
     if (endKind) {
+      sawExplicitBoundary = true;
       if (current && current.sourceKind === endKind) {
         blocks.push(current);
         current = null;
@@ -2209,12 +2288,98 @@ function extractExplicitQuestionBlocks(markdown, warnings = []) {
     blocks.push(current);
     warnings.push(`检测到“${questionBlockStartLabel(current.sourceKind)}”但没有找到“${questionBlockEndLabel(current.sourceKind)}”，已从开始标记解析到文末`);
   }
+  const explicitBlocks = blocks
+    .map((block) => ({
+      sourceKind: block.sourceKind,
+      content: block.lines.join("\n").trim(),
+    }))
+    .filter((block) => block.content);
+  if (sawExplicitBoundary || explicitBlocks.length) {
+    // 页面可能同时包含新格式的显式边界和旧格式的章节标题；两者都扫描，
+    // 让显式区块优先，同时通过题干去重避免同一题被重复导入。
+    const implicitBlocks = extractImplicitQuestionBlocks(lines, []);
+    const explicitKeys = new Set(
+      explicitBlocks.map((block) => `${block.sourceKind}\u0000${normalizeText(block.content)}`),
+    );
+    const additionalImplicitBlocks = implicitBlocks.filter(
+      (block) => !explicitKeys.has(`${block.sourceKind}\u0000${normalizeText(block.content)}`),
+    );
+    if (additionalImplicitBlocks.length) {
+      warnings.push("检测到显式边界与章节标题两种题库范围，已合并解析");
+    }
+    return [...explicitBlocks, ...additionalImplicitBlocks];
+  }
+
+  // 旧版 Notion 讲义常用“七、历年真题 · 本节相关”这类章节标题，
+  // 没有单独写“开始/结束”标记。兼容这种格式，同时仍只在题库章节范围内解析。
+  return extractImplicitQuestionBlocks(lines, warnings);
+}
+
+function extractImplicitQuestionBlocks(lines, warnings = []) {
+  const blocks = [];
+  let current = null;
+  for (const line of lines) {
+    const sourceKind = detectImplicitQuestionSectionStart(line);
+    if (sourceKind) {
+      if (current?.lines?.length) {
+        blocks.push(current);
+        warnings.push(
+          `检测到新的“${questionBlockStartLabel(sourceKind)}”章节标题，上一段未使用显式结束标记，已按标题分段`,
+        );
+      }
+      const headingLevel = /^(#{1,6})\s+/.exec(String(line || "").trim())?.[1].length || 0;
+      current = {
+        sourceKind,
+        headingLevel,
+        title: stripMarkdownInline(line),
+        lines: [],
+      };
+      warnings.push(`未找到显式边界，已使用“${stripMarkdownInline(line)}”章节标题作为导入范围`);
+      continue;
+    }
+    const heading = /^(#{1,6})\s+/.exec(String(line || "").trim());
+    if (
+      current &&
+      current.headingLevel &&
+      heading &&
+      heading[1].length <= current.headingLevel
+    ) {
+      blocks.push(current);
+      current = null;
+    }
+    if (current) current.lines.push(line);
+  }
+  if (current?.lines?.length) {
+    blocks.push(current);
+    if (current.headingLevel) {
+      warnings.push(`章节标题“${current.title}”后未找到同级标题，已解析到文末`);
+    } else {
+      warnings.push(`章节标题“${current.title}”没有明确结束边界，已解析到文末`);
+    }
+  }
   return blocks
     .map((block) => ({
       sourceKind: block.sourceKind,
       content: block.lines.join("\n").trim(),
     }))
     .filter((block) => block.content);
+}
+
+function detectImplicitQuestionSectionStart(line) {
+  const raw = String(line || "").trim();
+  const normalized = normalizeTeachingSectionLine(raw);
+  if (!normalized || detectQuestionBlockStart(raw) || detectQuestionBlockEnd(raw)) return "";
+  const headingLike = /^#{1,6}\s*/.test(raw);
+  // 只把中文章节序号视为无 Markdown 的章节标题；数字序号通常是题号，
+  // 例如“1. 模拟题”不能被误当成新的题库范围。
+  const numberedSection = /^[一二三四五六七八九十百千万]+[、.．]/.test(normalized);
+  const realExamTitle = /(?:历年真题|真题演练|真题库)/.test(normalized);
+  const mockExamTitle = /(?:模拟题|模拟练习|模拟演练|模拟题库)/.test(normalized);
+  const realExamPrefix = /^(?:历年真题|真题演练|真题库)/.test(normalized);
+  const mockExamPrefix = /^(?:模拟题|模拟练习|模拟演练|模拟题库)/.test(normalized);
+  if (realExamTitle && (headingLike || numberedSection || realExamPrefix)) return "历年真题";
+  if (mockExamTitle && (headingLike || numberedSection || mockExamPrefix)) return "模拟题";
+  return "";
 }
 
 function detectQuestionBlockStart(line) {
@@ -2285,6 +2450,27 @@ function normalizeQuestionTypeLabel(type) {
   return label;
 }
 
+function inferQuestionTypeFromMeta(meta) {
+  const label = String(meta || "");
+  if (/多选|多项/.test(label)) return "多选题";
+  if (/单选|单项/.test(label)) return "单选题";
+  if (/判断/.test(label)) return "判断题";
+  if (/操作/.test(label)) return "操作题";
+  if (/简答/.test(label)) return "简答题";
+  return "";
+}
+
+function parseQuestionCardMetadata(stem) {
+  const source = String(stem || "").trim();
+  const match = /^[|｜]\s*(单选(?:题)?|单项选择(?:题)?|多选(?:题)?|多项选择(?:题)?|判断(?:题)?|简答(?:题)?|操作(?:应用)?题?)\s*(?:[·•・]\s*(易|中|难))?\s*(?:[|｜]\s*)?(.*)$/u.exec(source);
+  if (!match) return { stem: source, type: "", difficulty: "" };
+  return {
+    stem: match[3].trim(),
+    type: normalizeQuestionTypeLabel(match[1]),
+    difficulty: match[2] || "",
+  };
+}
+
 function stripQuestionStemPrefix(stem) {
   return String(stem || "")
     .trim()
@@ -2292,7 +2478,7 @@ function stripQuestionStemPrefix(stem) {
     .replace(/^[（(【[]\s*\d{4}\s*(?:[·.．、\-—]\s*\d{1,3})?\s*[)）】\]]\s*/, "")
     .replace(/^\d{4}\s*(?:[·.．、\-—]\s*\d{1,3})\s*/, "")
     .replace(/^第\s*\d+\s*[题問]\s*[：:、.．]?\s*/, "")
-    .replace(/^\d+[.、]\s*/, "")
+    .replace(/^\d+[.．、]\s*/, "")
     .trim();
 }
 
@@ -2332,17 +2518,18 @@ function parseNumberedQuestionStart(line) {
   const cleaned = String(line || "")
     .trim()
     .replace(/^[-*]\s*/, "")
-    .replace(/[*_`]/g, "")
-    .replace(/^[^\d]+(?=\d+[.、])/u, "");
+    .replace(/[*`]/g, "")
+    .replace(/^[^\d]+(?=\d+[.．、])/u, "");
 
-  // 匹配格式：5.（2017）题干内容 或 5.【2017】题干内容
-  const withYearMatch = /^(\d+)[.、]\s*[（【([](\d{4})[)）】\]]\s*(.+)$/.exec(cleaned);
+  // 匹配格式：5.（2017）题干内容、5.（2017·单选）题干内容或 5.【2017】题干内容
+  const withYearMatch = /^(\d+)[.．、]\s*[（【(\[]\s*(\d{4})(?:\s*[·•・]\s*([^）】\]]+))?\s*[)）】\]]\s*(.+)$/.exec(cleaned);
   if (withYearMatch) {
-    return [withYearMatch[0], withYearMatch[1], withYearMatch[3], withYearMatch[2]];
+    const meta = [withYearMatch[2], withYearMatch[3]].filter(Boolean).join("·");
+    return [withYearMatch[0], withYearMatch[1], withYearMatch[4], meta];
   }
 
   // 原有的简单格式：5. 题干内容
-  const simpleMatch = /^(\d+)[.、]\s*(.+)$/.exec(cleaned);
+  const simpleMatch = /^(\d+)[.．、]\s*(.+)$/.exec(cleaned);
   if (simpleMatch) {
     return [simpleMatch[0], simpleMatch[1], simpleMatch[2]];
   }
@@ -2366,7 +2553,7 @@ function parseTypedQuestionStart(line) {
     .trim()
     .replace(/^[-*]\s*/, "")
     .replace(/^[^\p{L}\p{N}]+/u, "")
-    .replace(/[*_`]/g, "")
+    .replace(/[*`]/g, "")
     .replace(/\s+/g, " ");
   const prefixedMatch = /^(操作题|操作应用题|简答题|单选题|单项选择题|多选题|多项选择题|判断题)\s*(?:[（(]([^）)]+)[）)])?\s*[：:]\s*(.+)$/.exec(cleaned);
   if (prefixedMatch) {
@@ -2436,7 +2623,8 @@ function isTeachingAnswerHeading(line) {
 function buildTeachingQuestion(raw, chapter) {
   const detail = parseAnswerAndAnalysis(raw.details || "");
   const split = splitInlineChoiceOptions(raw.stemLines.join("\n"));
-  const stem = split.stem
+  const cardMeta = parseQuestionCardMetadata(split.stem);
+  const stem = (cardMeta.stem || split.stem)
     .replace(/^操作题[：:]\s*/, "")
     .replace(/^操作应用题[：:]\s*/, "")
     .replace(/^简答题[：:]\s*/, "")
@@ -2450,8 +2638,8 @@ function buildTeachingQuestion(raw, chapter) {
   if (isPlaceholderTeachingQuestionStem(stem)) return null;
   const options = cleanTeachingOptions(raw.options.length ? raw.options : split.options);
   const type = inferFinalTeachingQuestionType({
-    stem: split.stem.trim(),
-    currentType: raw.type,
+    stem: (cardMeta.stem || split.stem).trim(),
+    currentType: raw.type || cardMeta.type,
     options,
     answer: detail.answer,
   });
@@ -2464,7 +2652,7 @@ function buildTeachingQuestion(raw, chapter) {
     options: /单选|多选/.test(type) ? options.join("\n") : "",
     answer,
     analysis,
-    difficulty: "中",
+    difficulty: raw.difficulty || cardMeta.difficulty || "中",
     source: buildTeachingQuestionSource(raw.sourceKind, chapter.title),
     questionSourceKind: teachingQuestionSourceKind(raw.sourceKind),
     year: deriveTeachingQuestionYear(raw),
@@ -2590,6 +2778,14 @@ function cleanTeachingOptions(options) {
 function inferFinalTeachingQuestionType({ stem, currentType, options, answer }) {
   const normalizedAnswer = normalizeChoiceAnswerLetters(answer);
   if (/^操作题[：:]/.test(stem)) return "操作题";
+  // 题库章节标题是最可靠的题型来源。先尊重单选/多选分组，
+  // 避免“正确的方法”“操作步骤”等词触发简答题关键词误判。
+  if (options.length >= 2 && currentType === "多选题") {
+    return "多选题";
+  }
+  if (options.length >= 2 && currentType === "单选题") {
+    return "单选题";
+  }
   if (isShortAnswerStem(stem)) return "简答题";
   if (options.length >= 2) {
     if (normalizedAnswer.length > 1) return "多选题";

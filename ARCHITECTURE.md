@@ -150,7 +150,7 @@ project/
 - `POST /api/chapters/:id/deepseek-fill-outline`：DeepSeek Agent A 自动填充考点，复用 Codex A 的上下文、prompt、schema、Notion 写回和 SQLite 日志落点
 - `POST /api/chapters/:id/import-exam-questions`：Codex Agent B 真题入库；候选题来源包括 Notion 真题库、章节关联真题、真题原始资料和本地 SQLite 已沉淀题库
 - `POST /api/chapters/:id/deepseek-import-exam-questions`：DeepSeek Agent B 真题入库，只让模型读取精简候选并返回最多 20 个候选题 `candidateId` 和摘要，后端再从 Notion / SQLite 候选题复制原题入库，避免长题干造成非法 JSON；DeepSeek B 不按当前章节重复题跳过，选中题目会插入为本轮选题结果；若 DeepSeek 偶发返回空内容或数量不足，后端按已排序候选题兜底补齐并写入 warning
-- `POST /api/chapters/:id/import-teaching-questions`：从当前章节最新教学页中只导入显式双边界内题目：`历年真题演练开始` 到 `历年真题演练结束` 作为历年真题来源，`模拟题开始` 到 `模拟题结束` 作为模拟题来源；边界外内容一律不解析、不导入，不再回退全文扫描；边界标记兼容 Markdown 标题、emoji、加粗和空格变体；没有任何开始标记时返回 0 题并提示老师补充边界；只有开始没有结束时从开始标记解析到文末并返回 warning；边界内支持 `单选题：...`、`单选题（2017）：...`、`单选题（2023补充）：...`、`多选题：...`、`多选题（2023）：...`、`判断题：...`、`判断题（2017）：...`、`单选题（模拟题）：...`、`多选题（模拟题）：...`、`判断题（模拟题）：...`、`操作题（模拟题）：...` 等题型前缀，解析时去掉题型和年份 / 补充说明前缀，年份或补充信息写入 `year`
+- `POST /api/chapters/:id/import-teaching-questions`：从当前章节教学页中只导入题库范围内题目：优先使用显式 `历年真题演练开始` 到 `历年真题演练结束`、`模拟题开始` 到 `模拟题结束` 双边界；兼容旧版 Notion 常见的 `历年真题 · 本节相关`、`模拟题` 等章节标题作为隐式起点，并在下一同级标题处结束。优先读取当前 Notion 页正文，旧的本地教学页只作回退；范围外内容一律不解析、不导入；边界标记兼容 Markdown 标题、emoji、加粗、空格和 Unicode 全角变体；范围内支持 `12. | 单选·易 题干`、`1. （2017·单选）题干`、独立 A/B/C/D 选项、答案折叠块及原有题型前缀，解析时去掉题卡元信息并保留难度，年份或补充信息写入 `year`
 - `POST /api/chapters/:id/cleanup-duplicate-questions`：老师清理当前章节 Notion AI 导入重复题
 - `POST /api/teacher/chapters/:id/questions`：老师手动新增当前章节题目
 - `PATCH /api/teacher/questions/:id`：老师编辑当前章节题目
@@ -197,7 +197,7 @@ project/
 
 - 老师先点击“同步 Notion 章节列表”，只更新本地章节列表，避免全量读取正文导致请求超时；Notion 失效章节只归档，不物理删除本地教学页、题库、答题记录或指定学生授权
 - 老师选中当前章节后点击“同步当前章节教学页”，后端只读取该章节 Notion 页面正文并写入 `teaching_pages`
-- 老师点击“导入当前章节习题”，后端只读取当前章节最新教学页中的双边界内容并写入 `exam_questions`：`历年真题演练开始` / `历年真题演练结束` 内按历年真题类来源处理，`模拟题开始` / `模拟题结束` 内按模拟题类来源处理；边界外的课堂提问、讲解示例、自编题和说明文字暂不进入网页题库；接口按题型返回解析、新增、更新、跳过统计
+- 老师点击“导入当前章节习题”，后端优先读取当前 Notion 正文（读取失败或解析不到题目时回退本地教学页），只把显式双边界或兼容题库章节标题范围内内容写入 `exam_questions`：`历年真题演练开始` / `历年真题演练结束` 内，以及 `历年真题 · 本节相关` 等隐式题库章节内按历年真题类来源处理；`模拟题开始` / `模拟题结束` 或 `模拟题` 章节内按模拟题类来源处理；边界外的课堂提问、讲解示例、自编题和说明文字暂不进入网页题库；接口按题型返回解析、新增、更新、跳过统计及来源 warning
 - 当前阶段 Notion 教学页导入题按边界区分历年真题和模拟题来源；操作题允许没有选项，答案保存为“按步骤评分”，参考步骤保存到解析
 - 学生端只读取本地已开放且 `notion_archived = 0` 的章节、教学页和题库，不直接调用 Notion；即使曾被指定授权，也不能通过旧 URL 访问归档章节。老师可显示归档章节查看历史数据，但依赖 Notion 的操作会被阻止。
 
@@ -247,7 +247,8 @@ DEEPSEEK_ANALYSIS_BASE_URL=https://api.deepseek.com
 DEEPSEEK_ANALYSIS_MODEL=deepseek-chat
 DEEPSEEK_ANALYSIS_TIMEOUT_MS=12000
 
-CODEX_BIN=/Applications/Codex.app/Contents/Resources/codex
+# Codex CLI；留空时自动探测 PATH，以及 macOS ChatGPT/Codex App 的内置 CLI
+CODEX_BIN=
 CODEX_MODEL=
 CODEX_TIMEOUT_MS=600000
 
