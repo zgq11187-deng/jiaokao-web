@@ -150,7 +150,7 @@ project/
 - `POST /api/chapters/:id/deepseek-fill-outline`：DeepSeek Agent A 自动填充考点，复用 Codex A 的上下文、prompt、schema、Notion 写回和 SQLite 日志落点
 - `POST /api/chapters/:id/import-exam-questions`：Codex Agent B 真题入库；候选题来源包括 Notion 真题库、章节关联真题、真题原始资料和本地 SQLite 已沉淀题库
 - `POST /api/chapters/:id/deepseek-import-exam-questions`：DeepSeek Agent B 真题入库，只让模型读取精简候选并返回最多 20 个候选题 `candidateId` 和摘要，后端再从 Notion / SQLite 候选题复制原题入库，避免长题干造成非法 JSON；DeepSeek B 不按当前章节重复题跳过，选中题目会插入为本轮选题结果；若 DeepSeek 偶发返回空内容或数量不足，后端按已排序候选题兜底补齐并写入 warning
-- `POST /api/chapters/:id/import-teaching-questions`：从当前章节教学页中只导入题库范围内题目：优先使用显式 `历年真题演练开始` 到 `历年真题演练结束`、`模拟题开始` 到 `模拟题结束` 双边界；兼容旧版 Notion 常见的 `历年真题 · 本节相关`、`模拟题` 等章节标题作为隐式起点，并在下一同级标题处结束。优先读取当前 Notion 页正文，旧的本地教学页只作回退；范围外内容一律不解析、不导入；边界标记兼容 Markdown 标题、emoji、加粗、空格和 Unicode 全角变体；范围内支持 `12. | 单选·易 题干`、`1. （2017·单选）题干`、独立 A/B/C/D 选项、答案折叠块及原有题型前缀，解析时去掉题卡元信息并保留难度，年份或补充信息写入 `year`
+- `POST /api/chapters/:id/import-teaching-questions`：从当前章节教学页中只导入题库范围内题目：优先使用显式 `历年真题演练开始` 到 `历年真题演练结束`、`模拟题开始` 到 `模拟题结束` 双边界；兼容旧版 Notion 常见的 `历年真题 · 本节相关`、`模拟题` 等章节标题作为隐式起点，并在下一同级标题处结束。优先读取当前 Notion 页正文，旧的本地教学页只作回退；范围外内容一律不解析、不导入；边界标记兼容 Markdown 标题、emoji、加粗、空格和 Unicode 全角变体；范围内支持 `12. | 单选·易 题干`、`1. （2017·单选）题干`、独立 A/B/C/D 选项、答案折叠块及原有题型前缀，也支持 `2019 年真题·第 15 题` 这类年份题号独立行和 `第（1）（2）问` 操作题多小问格式；解析时去掉题卡元信息并保留难度，年份或补充信息写入 `year`
 - `POST /api/chapters/:id/cleanup-duplicate-questions`：老师清理当前章节 Notion AI 导入重复题
 - `POST /api/teacher/chapters/:id/questions`：老师手动新增当前章节题目
 - `PATCH /api/teacher/questions/:id`：老师编辑当前章节题目

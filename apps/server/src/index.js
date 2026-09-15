@@ -2164,7 +2164,8 @@ function parseTeachingQuestions(markdown, chapter, warnings = []) {
         current.options.push(...inlineOptions.options);
         continue;
       }
-      const option = /^([A-H])[.．、]\s*(.+)$/.exec(line);
+      const optionLine = line.replace(/^[-*]\s*/, "").replace(/[*`]/g, "").trim();
+      const option = /^([A-H])[.．、]\s*(.+)$/.exec(optionLine);
       if (option) {
         if (!/单选|多选/.test(current.type)) current.type = "单选题";
         current.options.push(`${option[1].toUpperCase()}. ${option[2].trim()}`);
@@ -2515,11 +2516,14 @@ function inferQuestionTypeFromStem(stem, currentType) {
 }
 
 function parseNumberedQuestionStart(line) {
-  const cleaned = String(line || "")
-    .trim()
+  const raw = String(line || "").trim();
+  const withoutDecorations = raw
     .replace(/^[-*]\s*/, "")
     .replace(/[*`]/g, "")
-    .replace(/^[^\d]+(?=\d+[.．、])/u, "");
+    .trim();
+  // 选项行（尤其是“A. 0.25”这类小数选项）不能被清理成“0.25”后误判为题号。
+  if (/^[A-H][.．、]\s*/i.test(raw) || /^[A-H][.．、]\s*/i.test(withoutDecorations)) return null;
+  const cleaned = withoutDecorations.replace(/^[^\d]+(?=\d+[.．、])/u, "");
 
   // 匹配格式：5.（2017）题干内容、5.（2017·单选）题干内容或 5.【2017】题干内容
   const withYearMatch = /^(\d+)[.．、]\s*[（【(\[]\s*(\d{4})(?:\s*[·•・]\s*([^）】\]]+))?\s*[)）】\]]\s*(.+)$/.exec(cleaned);
@@ -2548,6 +2552,29 @@ function parseBracketedQuestionStart(line) {
   return ["", match[1], `${match[1]} ${match[2]}`.trim()];
 }
 
+function parseLegacyExamMetadataStart(line) {
+  const cleaned = String(line || "")
+    .trim()
+    .replace(/^[-*]\s*/, "")
+    .replace(/[*`]/g, "")
+    .replace(/\s+/g, " ");
+
+  // 历史 Notion 讲义常把年份和题号单独写成一行，题干放在下一行，
+  // 例如“2019 年真题·第 15 题”或“2019 年真题·Excel 操作题第（2）问”。
+  const operationMatch = /^(\d{4})\s*年?\s*(?:历年)?真题\s*[·•・:：\-|—]?\s*(?:[A-Za-z0-9一二三四五六七八九十百千万]+\s*)*(操作(?:应用)?题)\s*第\s*((?:[（(]?\s*\d+\s*[）)]?\s*)+)问(?:题)?$/u.exec(cleaned);
+  if (operationMatch) {
+    const number = operationMatch[3].match(/\d+/g)?.join("、") || "";
+    return [cleaned, number, "", `${operationMatch[1]}·${operationMatch[2]}`];
+  }
+
+  const questionMatch = /^(\d{4})\s*年?\s*(?:历年)?真题\s*[·•・:：\-|—]?\s*第\s*[（(]?\s*(\d+)\s*[）)]?\s*题$/u.exec(cleaned);
+  if (questionMatch) {
+    return [cleaned, questionMatch[2], "", questionMatch[1]];
+  }
+
+  return null;
+}
+
 function parseTypedQuestionStart(line) {
   const cleaned = String(line || "")
     .trim()
@@ -2573,7 +2600,12 @@ function parseTypedQuestionStart(line) {
 }
 
 function parseTeachingQuestionStart(line) {
-  return parseNumberedQuestionStart(line) || parseTypedQuestionStart(line) || parseBracketedQuestionStart(line);
+  return (
+    parseNumberedQuestionStart(line) ||
+    parseTypedQuestionStart(line) ||
+    parseBracketedQuestionStart(line) ||
+    parseLegacyExamMetadataStart(line)
+  );
 }
 
 function collectDetailsText(lines, startIndex) {
