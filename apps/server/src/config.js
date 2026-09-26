@@ -26,11 +26,11 @@ export const config = {
     baseUrl:
       process.env.QWEN_BASE_URL ||
       "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    visionModel: process.env.QWEN_VISION_MODEL || "qwen3-vl-flash",
+    visionModel: process.env.QWEN_VISION_MODEL || "qwen3.8-flash",
     textModel:
       process.env.QWEN_TEXT_MODEL ||
       process.env.QWEN_VISION_MODEL ||
-      "qwen3-vl-flash",
+      "qwen3.8-flash",
   },
   mockAnalysis: {
     provider: process.env.MOCK_ANALYSIS_PROVIDER || "codex-luna",

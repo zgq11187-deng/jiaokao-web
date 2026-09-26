@@ -571,6 +571,7 @@ function App() {
       setSectionNo("");
       await loadChapters();
       setSelectedId(data.chapter.id);
+      if (data.warning) setSyncNotice(data.warning);
     });
   }
 

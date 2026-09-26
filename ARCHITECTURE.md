@@ -136,6 +136,7 @@ project/
 
 主要 API 分组：
 
+- `POST /api/chapters`：老师新建章节；优先在 Notion 章节库创建来源页面，若 Notion 暂时不可用仍保存为 `notion_page_id` 为空的本地章节并返回 warning，后续可通过标题同步重新绑定。
 - `GET /api/chapters`：章节列表；老师可取得全部本地章节，老师端默认隐藏 `notion_archived = 1` 且可主动显示；学生只返回未归档且对自己可见的章节（`student_visible = 1` 或在 `chapter_student_access` 中有授权）
 - `GET /api/chapters/:id`：章节详情
 - `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；完整分页后排除回收站和已归档页面，并对账本地 Notion 来源章节及空 `notion_page_id` 的本地记录。空 ID 记录按规范化标题唯一匹配有效页面，匹配成功时补写来源元数据，匹配不到时设为 `notion_archived = 1`、关闭 `student_visible`；同名页面跳过绑定并返回歧义统计。失效页面保留指定学生授权和全部历史数据；恢复页面只清除归档状态并更新元数据，不自动重新开放给学生。接口返回新增、更新、归档、恢复、保留、标题绑定、跳过同名标题和跳过无效页面统计。部署前需确认空 ID 本地章节均应纳入 Notion 管理。
@@ -150,7 +151,7 @@ project/
 - `POST /api/chapters/:id/deepseek-fill-outline`：DeepSeek Agent A 自动填充考点，复用 Codex A 的上下文、prompt、schema、Notion 写回和 SQLite 日志落点
 - `POST /api/chapters/:id/import-exam-questions`：Codex Agent B 真题入库；候选题来源包括 Notion 真题库、章节关联真题、真题原始资料和本地 SQLite 已沉淀题库
 - `POST /api/chapters/:id/deepseek-import-exam-questions`：DeepSeek Agent B 真题入库，只让模型读取精简候选并返回最多 20 个候选题 `candidateId` 和摘要，后端再从 Notion / SQLite 候选题复制原题入库，避免长题干造成非法 JSON；DeepSeek B 不按当前章节重复题跳过，选中题目会插入为本轮选题结果；若 DeepSeek 偶发返回空内容或数量不足，后端按已排序候选题兜底补齐并写入 warning
-- `POST /api/chapters/:id/import-teaching-questions`：从当前章节教学页中只导入题库范围内题目：优先使用显式 `历年真题演练开始` 到 `历年真题演练结束`、`模拟题开始` 到 `模拟题结束` 双边界；兼容旧版 Notion 常见的 `历年真题 · 本节相关`、`模拟题` 等章节标题作为隐式起点，并在下一同级标题处结束。优先读取当前 Notion 页正文，旧的本地教学页只作回退；范围外内容一律不解析、不导入；边界标记兼容 Markdown 标题、emoji、加粗、空格和 Unicode 全角变体；范围内支持 `12. | 单选·易 题干`、`1. （2017·单选）题干`、独立 A/B/C/D 选项、答案折叠块及原有题型前缀，解析时去掉题卡元信息并保留难度，年份或补充信息写入 `year`
+- `POST /api/chapters/:id/import-teaching-questions`：从当前章节教学页中只导入题库范围内题目：优先使用显式 `历年真题演练开始` 到 `历年真题演练结束`、`模拟题开始` 到 `模拟题结束` 双边界；兼容旧版 Notion 常见的 `历年真题 · 本节相关`、`模拟题` 等章节标题作为隐式起点，并在下一同级标题处结束。优先读取当前 Notion 页正文，旧的本地教学页只作回退；范围外内容一律不解析、不导入；边界标记兼容 Markdown 标题、emoji、加粗、空格和 Unicode 全角变体；范围内支持 `12. | 单选·易 题干`、`1. （2017·单选）题干`、独立 A/B/C/D 选项、答案折叠块及原有题型前缀，也支持 `2019 年真题·第 15 题` 这类年份题号独立行和 `第（1）（2）问` 操作题多小问格式；解析时去掉题卡元信息并保留难度，年份或补充信息写入 `year`
 - `POST /api/chapters/:id/cleanup-duplicate-questions`：老师清理当前章节 Notion AI 导入重复题
 - `POST /api/teacher/chapters/:id/questions`：老师手动新增当前章节题目
 - `PATCH /api/teacher/questions/:id`：老师编辑当前章节题目
@@ -233,8 +234,8 @@ OUTLINE_DATABASE_ID=
 
 QWEN_API_KEY=
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-QWEN_VISION_MODEL=qwen3-vl-flash
-QWEN_TEXT_MODEL=qwen3-vl-flash
+QWEN_VISION_MODEL=qwen3.8-flash
+QWEN_TEXT_MODEL=qwen3.8-flash
 
 # 模拟考试成绩分析（密钥只在服务端）
 MOCK_ANALYSIS_PROVIDER=codex-luna
