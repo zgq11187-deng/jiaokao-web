@@ -413,6 +413,8 @@ app.post("/api/chapters", requireTeacher, async (req, res) => {
         notionWarning = "Notion 章节页暂时创建失败，已先保存为本地章节；请检查 Notion 权限或网络，后续同步可按标题重新绑定。";
         console.error(`[chapters] create Notion page failed for ${title.trim()}:`, error);
       }
+    } else {
+      notionWarning = "Notion 未配置或章节数据库不可用，已先保存为本地章节；后续同步可按标题重新绑定。";
     }
     const result = run(
       `INSERT INTO chapters (title, chapter_no, section_no, notion_page_id, notion_url)
