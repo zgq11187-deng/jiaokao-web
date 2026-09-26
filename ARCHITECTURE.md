@@ -136,6 +136,7 @@ project/
 
 主要 API 分组：
 
+- `POST /api/chapters`：老师新建章节；优先在 Notion 章节库创建来源页面，若 Notion 暂时不可用仍保存为 `notion_page_id` 为空的本地章节并返回 warning，后续可通过标题同步重新绑定。
 - `GET /api/chapters`：章节列表；老师可取得全部本地章节，老师端默认隐藏 `notion_archived = 1` 且可主动显示；学生只返回未归档且对自己可见的章节（`student_visible = 1` 或在 `chapter_student_access` 中有授权）
 - `GET /api/chapters/:id`：章节详情
 - `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；完整分页后排除回收站和已归档页面，并对账本地 Notion 来源章节及空 `notion_page_id` 的本地记录。空 ID 记录按规范化标题唯一匹配有效页面，匹配成功时补写来源元数据，匹配不到时设为 `notion_archived = 1`、关闭 `student_visible`；同名页面跳过绑定并返回歧义统计。失效页面保留指定学生授权和全部历史数据；恢复页面只清除归档状态并更新元数据，不自动重新开放给学生。接口返回新增、更新、归档、恢复、保留、标题绑定、跳过同名标题和跳过无效页面统计。部署前需确认空 ID 本地章节均应纳入 Notion 管理。
@@ -233,8 +234,8 @@ OUTLINE_DATABASE_ID=
 
 QWEN_API_KEY=
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-QWEN_VISION_MODEL=qwen3-vl-flash
-QWEN_TEXT_MODEL=qwen3-vl-flash
+QWEN_VISION_MODEL=qwen3.8-flash
+QWEN_TEXT_MODEL=qwen3.8-flash
 
 # 模拟考试成绩分析（密钥只在服务端）
 MOCK_ANALYSIS_PROVIDER=codex-luna

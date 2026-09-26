@@ -404,8 +404,15 @@ app.post("/api/chapters", requireTeacher, async (req, res) => {
     const { title, chapterNo, sectionNo } = req.body || {};
     if (!title?.trim()) return res.status(400).json({ error: "章节标题不能为空" });
     let notionPage = null;
+    let notionWarning = "";
     if (notion && config.notion.chapterDbId) {
-      notionPage = await createChapter({ title, chapterNo, sectionNo });
+      try {
+        notionPage = await createChapter({ title, chapterNo, sectionNo });
+      } catch (error) {
+        // Notion 暂时不可用时仍保留本地手动章节，避免外部服务故障阻断老师备课。
+        notionWarning = "Notion 章节页暂时创建失败，已先保存为本地章节；请检查 Notion 权限或网络，后续同步可按标题重新绑定。";
+        console.error(`[chapters] create Notion page failed for ${title.trim()}:`, error);
+      }
     }
     const result = run(
       `INSERT INTO chapters (title, chapter_no, section_no, notion_page_id, notion_url)
@@ -421,7 +428,7 @@ app.post("/api/chapters", requireTeacher, async (req, res) => {
     const chapter = get(`SELECT * FROM chapters WHERE id = ?`, [
       result.lastInsertRowid,
     ]);
-    res.json({ ok: true, chapter });
+    res.json({ ok: true, chapter, warning: notionWarning });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
