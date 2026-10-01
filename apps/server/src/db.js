@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { config, ensureRuntimeDirs } from "./config.js";
+import { migrateChapterImages } from "./chapter-images.js";
 
 ensureRuntimeDirs();
 
@@ -151,6 +152,7 @@ migrateChapterStudentVisible();
 migrateChapterNotionArchived();
 migrateExamQuestionArchived();
 migrateExamQuestionSourceKind();
+migrateChapterImages(db);
 
 function migrateChapterStudentVisible() {
   const columns = db.prepare(`PRAGMA table_info(chapters)`).all();

@@ -4,7 +4,8 @@ import express from "express";
 import cors from "cors";
 import mammoth from "mammoth";
 import { config, ensureRuntimeDirs } from "./config.js";
-import { all, get, logStep, run } from "./db.js";
+import { all, db, get, logStep, run } from "./db.js";
+import { createImageStore, createImageSync, createChapterImageHandler } from "./chapter-images.js";
 import { generateRawMarkdownWithQwen } from "./qwen.js";
 import { runCodexJson } from "./codex.js";
 import { runDeepSeekJson } from "./deepseek.js";
@@ -58,6 +59,7 @@ import {
 
 ensureRuntimeDirs();
 const app = express();
+const chapterImageStore = createImageStore(db, path.join(path.dirname(config.dbPath), "chapter-images"));
 const sharedDir = path.resolve(config.rootDir, "packages/shared/schemas");
 const RAW_PAGE_PLACEHOLDER = "未提取到文本内容，请检查 PDF 是否为扫描件";
 const EXAM_CANDIDATE_SCOPE_LIMIT = 150;
@@ -77,6 +79,12 @@ app.use(express.static(path.join(import.meta.dirname, "../public")));
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "jiaokao-web-server" });
 });
+
+app.get("/api/chapters/:chapterId/images/:imageId", requireAuthorized, createChapterImageHandler({
+  store: chapterImageStore,
+  getChapter: (id) => get("SELECT * FROM chapters WHERE id = ?", [id]),
+  canAccessChapter,
+}));
 
 app.get("/api/auth/me", (req, res) => {
   res.json({
@@ -309,8 +317,8 @@ app.post("/api/teacher/chapters/:id/sync-teaching-page-from-notion", requireTeac
         error: "当前 Notion 页面已不存在，无法重新同步教学页",
       });
     }
-    const action = await syncTeachingPageFromNotionChapter(chapter);
-    res.json({ ok: true, action });
+    const result = await syncTeachingPageFromNotionChapter(chapter);
+    res.json({ ok: true, ...result });
   } catch (error) {
     res.status(500).json({ error: `同步当前章节教学页失败：${error.message}` });
   }
@@ -1809,6 +1817,7 @@ function questionFromExamCandidate(candidate) {
 
 async function importTeachingQuestions(chapter) {
   const warnings = [];
+  const imageSync = createImageSync({ chapterId: chapter.id, store: chapterImageStore });
   try {
     logStep(chapter.id, "import-teaching-questions", "running", "导入当前章节习题");
     const sourceResult = await loadTeachingQuestionSource(chapter);
@@ -1850,6 +1859,7 @@ async function importTeachingQuestions(chapter) {
           updated: 0,
           skipped: 0,
           byType,
+          imageStats: imageSync.imageStats,
           warnings,
         };
         logStep(
@@ -1875,7 +1885,15 @@ async function importTeachingQuestions(chapter) {
       incrementQuestionTypeStats(byType, question.type, "parsed");
     }
     for (const question of parsed.questions.slice(0, TEACHING_PAGE_QUESTION_LIMIT)) {
-      const existing = findExistingTeachingQuestion(chapter.id, question);
+      const match = findExistingTeachingQuestion(chapter.id, question);
+      if (match.kind === "ambiguous" || match.kind === "manual") {
+        warnings.push(`题目“${stripQuestionImages(question.stem).slice(0, 35)}”匹配${match.kind === "manual" ? "手动题" : "多个已有题目"}，为保护原题已跳过`);
+        skipped++;
+        incrementQuestionTypeStats(byType, question.type, "skipped");
+        continue;
+      }
+      const existing = match.question;
+      await materializeTeachingQuestionImages(question, chapter, source, sourceResult.imageBlocks, imageSync, warnings);
       if (existing) {
         const patch = buildQuestionPatch(existing, question);
         if (patch.fields.length) {
@@ -1920,6 +1938,7 @@ async function importTeachingQuestions(chapter) {
     if (parsed.questions.length > TEACHING_PAGE_QUESTION_LIMIT) {
       warnings.push(`解析到 ${parsed.questions.length} 道题，本次最多导入 ${TEACHING_PAGE_QUESTION_LIMIT} 道`);
     }
+    warnings.push(...imageSync.warnings);
     const result = {
       source,
       expectedCount: parsed.expectedCount || null,
@@ -1928,6 +1947,7 @@ async function importTeachingQuestions(chapter) {
       updated,
       skipped,
       byType,
+      imageStats: imageSync.imageStats,
       warnings,
     };
     logStep(chapter.id, "import-teaching-questions", "success", "当前章节习题导入完成", result);
@@ -1935,6 +1955,31 @@ async function importTeachingQuestions(chapter) {
   } catch (error) {
     logStep(chapter?.id, "import-teaching-questions", "error", error.message);
     throw error;
+  }
+}
+
+async function materializeTeachingQuestionImages(question, chapter, source, imageBlocks, imageSync, warnings) {
+  for (const field of ["stem", "options", "analysis"]) {
+    if (source === "notion-page") {
+      const matches = [...String(question[field] || "").matchAll(/\[\[JIAOKAOIMAGE(\d+)\]\]/g)];
+      for (const match of matches) {
+        const block = imageBlocks[Number(match[1])];
+        const replacement = block ? await imageSync.onImage(block) : "[图片暂未同步：图片来源已变化]";
+        question[field] = question[field].replace(match[0], replacement);
+      }
+      continue;
+    }
+    question[field] = String(question[field] || "").replace(/!\[(?:\\.|[^\]\\])*\]\(\/api\/chapters\/(\d+)\/images\/([a-f0-9-]{36})\)/g, (marker, chapterId, imageId) => {
+      imageSync.imageStats.found++;
+      const image = Number(chapterId) === chapter.id && chapterImageStore.get(chapter.id, imageId);
+      if (image && chapterImageStore.filePath(image)) {
+        imageSync.imageStats.reused++;
+        return marker;
+      }
+      imageSync.imageStats.failed++;
+      warnings.push("本地教学页中有图片缓存不可用或不属于当前章节，请重新同步教学页");
+      return "[图片暂未同步：请重新同步教学页]";
+    });
   }
 }
 
@@ -1946,9 +1991,15 @@ async function loadTeachingQuestionSource(chapter) {
   const localMarkdown = latest?.markdown || "";
   let notionMarkdown = "";
   let notionReadError = "";
+  const imageBlocks = [];
   if (chapter.notion_page_id && notion) {
     try {
-      notionMarkdown = await readPageMarkdown(chapter.notion_page_id);
+      notionMarkdown = await readPageMarkdown(chapter.notion_page_id, {
+        onImage(block) {
+          const index = imageBlocks.push(block) - 1;
+          return `[[JIAOKAOIMAGE${index}]]`;
+        },
+      });
     } catch (error) {
       notionReadError = error?.message || "未知错误";
     }
@@ -1984,6 +2035,7 @@ async function loadTeachingQuestionSource(chapter) {
     warnings,
     fallbackMarkdown: fallback.markdown,
     fallbackSource: fallback.source,
+    imageBlocks,
   };
 }
 
@@ -2147,6 +2199,16 @@ function parseTeachingQuestions(markdown, chapter, warnings = []) {
         finishCurrent();
         continue;
       }
+      if (isQuestionImageLine(line)) {
+        if (current) {
+          if (current.options.length) {
+            current.options[current.options.length - 1] += `\n${line}`;
+          } else {
+            current.stemLines.push(line);
+          }
+        }
+        continue;
+      }
       const questionStart = parseTeachingQuestionStart(line);
       if (questionStart && (currentType || hasImportableScope)) {
         finishCurrent();
@@ -2186,17 +2248,34 @@ function parseTeachingQuestions(markdown, chapter, warnings = []) {
   }
 
   const deduped = [];
-  const seen = new Set();
+  const seen = new Map();
   for (const question of questions) {
-    const key = normalizeText(question.stem);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
+    const key = normalizeQuestionDedupKey(question.stem);
+    if (!key) continue;
+    if (seen.has(key)) {
+      const index = seen.get(key);
+      if (questionImageCount(question) > questionImageCount(deduped[index])) deduped[index] = question;
+      continue;
+    }
+    seen.set(key, deduped.length);
     deduped.push(question);
   }
   if (!deduped.length && scoped.trim()) {
     warnings.push("已找到题库型区块，但未能解析题干；请检查题目是否按“1. 题干 + A/B/C/D + details 答案解析”书写");
   }
+  const scopedImages = [...scoped.matchAll(/\[\[JIAOKAOIMAGE\d+\]\]|!\[(?:\\.|[^\]\\])*\]\(\/api\/chapters\/[1-9]\d*\/images\/[a-f0-9-]{36}\)/g)].map((match) => match[0]);
+  const assigned = deduped.map((question) => `${question.stem}\n${question.options}\n${question.analysis}`).join("\n");
+  const unassignedCount = scopedImages.filter((marker) => !assigned.includes(marker)).length;
+  if (unassignedCount) warnings.push(`${unassignedCount} 张题库范围内图片无法确定题目归属，未导入`);
   return { questions: deduped, expectedCount };
+}
+
+function isQuestionImageLine(line) {
+  return /^\[\[JIAOKAOIMAGE\d+\]\]$/.test(line) || /^!\[(?:\\.|[^\]\\])*\]\(\/api\/chapters\/[1-9]\d*\/images\/[a-f0-9-]{36}\)$/.test(line);
+}
+
+function questionImageCount(question) {
+  return (`${question.stem}\n${question.options}\n${question.analysis}`.match(/\[\[JIAOKAOIMAGE\d+\]\]|!\[(?:\\.|[^\]\\])*\]\(\/api\/chapters\/[1-9]\d*\/images\/[a-f0-9-]{36}\)/g) || []).length;
 }
 
 function filterTeachingQuestionImportLines(lines) {
@@ -2765,8 +2844,9 @@ function applyGroupedAnswerDetails(questions, details) {
 function parseGroupedAnswerDetails(details) {
   const result = new Map();
   const text = String(details || "")
-    .replace(/[*_`]/g, "")
-    .replace(/(?:参考答案|答案与解析|答案)[：:]?/g, " ")
+    .split(/\r?\n/)
+    .map((line) => isQuestionImageLine(line.trim()) ? line : line.replace(/[*_`]/g, "").replace(/(?:参考答案|答案与解析|答案)[：:]?/g, " "))
+    .join("\n")
     .replace(/\r/g, "\n");
   const choiceAnswerPattern = "[A-H](?:\\s*(?:[,，、/／和及])?\\s*[A-H])*";
   const pattern = new RegExp(
@@ -2894,7 +2974,9 @@ function normalizeParsedTeachingAnalysis(analysis) {
 
 function normalizeOperationAnalysis(details) {
   const text = String(details || "")
-    .replace(/[*_`]/g, "")
+    .split(/\r?\n/)
+    .map((line) => isQuestionImageLine(line.trim()) ? line : line.replace(/[*_`]/g, ""))
+    .join("\n")
     .replace(/^(?:参考操作步骤|操作步骤|答案与解析|参考答案与解析|参考答案|答案)[：:]?\s*/i, "")
     .trim();
   return text || "请按参考步骤评分";
@@ -2919,20 +3001,24 @@ function deriveTeachingQuestionTags(stem, chapter) {
 }
 
 function findExistingTeachingQuestion(chapterId, question) {
-  const exact = get(
-    `SELECT * FROM exam_questions WHERE chapter_id = ? AND stem = ?`,
-    [chapterId, question.stem],
-  );
-  if (exact) return exact;
   const targetKey = normalizeQuestionDedupKey(question.stem);
-  const candidates = all(`SELECT * FROM exam_questions WHERE chapter_id = ?`, [chapterId])
-    .filter((candidate) => isTeachingAiQuestion(candidate.source));
-  return candidates.find((candidate) => normalizeQuestionDedupKey(candidate.stem) === targetKey) || null;
+  const matches = all(`SELECT * FROM exam_questions WHERE chapter_id = ?`, [chapterId])
+    .filter((candidate) => normalizeQuestionDedupKey(candidate.stem) === targetKey);
+  if (matches.length > 1) return { kind: "ambiguous" };
+  if (matches.length && !isTeachingAiQuestion(matches[0].source)) return { kind: "manual" };
+  return { kind: matches.length ? "existing" : "new", question: matches[0] || null };
 }
 
 function normalizeQuestionDedupKey(stem) {
-  const split = splitInlineChoiceOptions(stem);
-  return normalizeText(stripQuestionDedupNoise(split.stem || stem));
+  const withoutImages = stripQuestionImages(stem);
+  const split = splitInlineChoiceOptions(withoutImages);
+  return normalizeText(stripQuestionDedupNoise(split.stem || withoutImages));
+}
+
+function stripQuestionImages(value) {
+  return String(value || "")
+    .replace(/\[\[JIAOKAOIMAGE\d+\]\]/g, " ")
+    .replace(/!\[(?:\\.|[^\]\\])*\]\(\/api\/chapters\/[1-9]\d*\/images\/[a-f0-9-]{36}\)/g, " ");
 }
 
 function stripQuestionDedupNoise(stem) {
@@ -4092,10 +4178,12 @@ async function syncTeachingPageFromNotionChapter(chapter) {
   if (!chapter.notion_page_id) {
     throw new Error("当前章节没有关联 Notion 页面");
   }
+  const images = createImageSync({ chapterId: chapter.id, store: chapterImageStore });
+  const response = (action) => ({ action, imageStats: images.imageStats, warnings: images.warnings });
   try {
-    const markdown = await readPageMarkdown(chapter.notion_page_id);
-    if (!isUsefulNotionTeachingMarkdown(markdown)) {
-      return "teachingSkipped";
+    const markdown = await readPageMarkdown(chapter.notion_page_id, { onImage: images.onImage });
+    if (!isUsefulNotionTeachingMarkdown(markdown) && !images.imageStats.found) {
+      return response("teachingSkipped");
     }
     const existing = get(
       `SELECT * FROM teaching_pages
@@ -4106,19 +4194,21 @@ async function syncTeachingPageFromNotionChapter(chapter) {
     if (existing) {
       run(
         `UPDATE teaching_pages
-         SET markdown = ?, summary = ?, created_at = CURRENT_TIMESTAMP
+         SET markdown = ?, summary = ?, warnings_json = ?, created_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
-        [markdown, summarizeTeachingMarkdown(markdown), existing.id],
+        [markdown, summarizeTeachingMarkdown(markdown), JSON.stringify(images.warnings), existing.id],
       );
-      return "teachingUpdated";
+      logStep(chapter.id, "sync-notion-teaching-page", images.warnings.length ? "warning" : "success", "教学页已同步", response("teachingUpdated"));
+      return response("teachingUpdated");
     }
     run(
       `INSERT INTO teaching_pages
-      (chapter_id, markdown, summary, notion_page_id)
-      VALUES (?, ?, ?, ?)`,
-      [chapter.id, markdown, summarizeTeachingMarkdown(markdown), chapter.notion_page_id],
+      (chapter_id, markdown, summary, notion_page_id, warnings_json)
+      VALUES (?, ?, ?, ?, ?)`,
+      [chapter.id, markdown, summarizeTeachingMarkdown(markdown), chapter.notion_page_id, JSON.stringify(images.warnings)],
     );
-    return "teachingCreated";
+    logStep(chapter.id, "sync-notion-teaching-page", images.warnings.length ? "warning" : "success", "教学页已同步", response("teachingCreated"));
+    return response("teachingCreated");
   } catch (error) {
     logStep(
       chapter?.id,
@@ -4127,7 +4217,8 @@ async function syncTeachingPageFromNotionChapter(chapter) {
       `同步 Notion 章节正文失败：${error.message}`,
       { notionPageId: chapter.notion_page_id },
     );
-    return "teachingFailed";
+    images.warnings.push("Notion 正文读取或保存失败，请查看生成日志");
+    return response("teachingFailed");
   }
 }
 

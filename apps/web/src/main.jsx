@@ -22,6 +22,8 @@ import {
   XCircle,
 } from "lucide-react";
 import "./styles.css";
+import ChapterImage from "./ChapterImage.jsx";
+import { parseChapterImage } from "./chapter-image-markdown.js";
 import featureMockExam from "./assets/trial-features/mock-exam.png";
 import featurePractice from "./assets/trial-features/practice.png";
 import featureResources from "./assets/trial-features/resources.png";
@@ -347,7 +349,12 @@ function App() {
         teachingSkipped: "当前 Notion 章节正文为空或过短，已跳过",
         teachingFailed: "当前章节教学页同步失败，请查看生成日志",
       };
-      setSyncNotice(labels[data.action] || "当前章节教学页同步完成。");
+      const stats = data.imageStats;
+      setSyncNotice([
+        labels[data.action] || "当前章节教学页同步完成。",
+        stats ? `图片：发现 ${stats.found}，下载 ${stats.downloaded}，复用 ${stats.reused}，失败 ${stats.failed}。` : "",
+        ...(data.warnings || []),
+      ].filter(Boolean).join(" "));
       await loadDetail();
     });
   }
@@ -2345,7 +2352,9 @@ function formatTeachingQuestionImportNotice(data = {}) {
     .map((item) => `${item.label} ${item.parsed || 0} 题 / 新增 ${item.imported || 0} / 更新 ${item.updated || 0}`)
     .join("；");
   const warningText = data.warnings?.length ? `；提示：${data.warnings.join("；")}` : "";
-  return `当前章节习题导入完成（读取来源：${sourceLabel}）：本次只导入显式“历年真题演练开始/结束”或“模拟题开始/结束”范围，以及兼容的题库章节标题范围内题目。解析 ${data.parsed || 0}，新增 ${data.imported || 0}，更新 ${data.updated || 0}，跳过 ${data.skipped || 0}${details ? `。${details}` : ""}${warningText}`;
+  const images = data.imageStats || {};
+  const imageText = `；图片发现 ${images.found || 0}，下载 ${images.downloaded || 0}，复用 ${images.reused || 0}，失败 ${images.failed || 0}`;
+  return `当前章节习题导入完成（读取来源：${sourceLabel}）：本次只导入显式“历年真题演练开始/结束”或“模拟题开始/结束”范围，以及兼容的题库章节标题范围内题目。解析 ${data.parsed || 0}，新增 ${data.imported || 0}，更新 ${data.updated || 0}，跳过 ${data.skipped || 0}${imageText}${details ? `。${details}` : ""}${warningText}`;
 }
 
 function emptyQuestionDraft(chapterTitle = "") {
@@ -2621,9 +2630,9 @@ function TeacherQuestionManager({
                       )}
                     </div>
                   </div>
-                  <h4>{question.stem}</h4>
-                  {question.options ? <pre>{question.options}</pre> : null}
-                  <p>解析：{question.analysis || "暂无解析"}</p>
+                  <QuestionContent text={question.stem} className="question-editor-stem" />
+                  {question.options ? <div className="question-editor-options">{parseQuestionOptions(question.options).map((option, index) => <QuestionContent key={index} text={option} />)}</div> : null}
+                  <div>解析：<QuestionContent text={question.analysis || "暂无解析"} /></div>
                 </>
               )}
                     </article>
@@ -3064,7 +3073,7 @@ function QuestionCard({
         {question.year ? <em>{question.year}</em> : null}
         {question.source ? <em>{question.source}</em> : null}
       </div>
-      <h3>{question.stem}</h3>
+      <QuestionContent text={question.stem} className="question-stem" />
       {isTrueFalseQuestion ? (
         <div className="true-false-grid">
           {[
@@ -3094,14 +3103,16 @@ function QuestionCard({
             const key = optionKey(option);
             const selected = selectedAnswerIncludes(value, key);
             return (
-              <button
-                key={option}
-                className={selected ? "selected" : ""}
-                onClick={() => onChange(toggleOptionAnswer(value, key, question.type))}
-                disabled={disabled}
-              >
-                {option}
-              </button>
+              <div key={`${key}-${option}`} className="question-option">
+                <button
+                  className={selected ? "selected" : ""}
+                  onClick={() => onChange(toggleOptionAnswer(value, key, question.type))}
+                  disabled={disabled}
+                >
+                  {stripQuestionImageLines(option) || `${key}. 查看配图`}
+                </button>
+                <QuestionContent text={imageLinesOnly(option)} />
+              </div>
             );
           })}
         </div>
@@ -3126,7 +3137,7 @@ function AnswerResult({ result }) {
       </strong>
       <p>你的答案：{result.selectedAnswer || "未记录"}</p>
       <p>正确答案：{isMissingAnswer(result.correctAnswer) ? "本题答案待老师补充" : result.correctAnswer}</p>
-      <p>解析：{result.analysis || "暂无解析"}</p>
+      <div>解析：<QuestionContent text={result.analysis || "暂无解析"} /></div>
     </div>
   );
 }
@@ -3145,12 +3156,13 @@ function WrongQuestionCard({ question, index }) {
         <em>{question.chapter_title}</em>
         <em>错 {question.wrong_count} 次</em>
       </div>
-      <h3>{question.stem}</h3>
+      <QuestionContent text={question.stem} className="question-stem" />
+      {question.options ? <div className="wrong-question-options">{parseQuestionOptions(question.options).map((option, optionIndex) => <QuestionContent key={optionIndex} text={option} />)}</div> : null}
       <p>你的答案：{question.last_selected_answer || "未记录"}</p>
       <p>正确答案：{question.answer || "未填写"}</p>
       <details className="md-details">
         <summary>查看解析</summary>
-        <p>{question.analysis || "暂无解析"}</p>
+        <QuestionContent text={question.analysis || "暂无解析"} />
       </details>
     </article>
   );
@@ -3271,7 +3283,7 @@ function ChapterPanels({ detail }) {
         {detail?.questions?.slice(0, 8).map((question) => (
           <article key={question.id}>
             <strong>{question.type}</strong>
-            <p>{question.stem}</p>
+            <QuestionContent text={question.stem} />
           </article>
         ))}
       </Panel>
@@ -3287,7 +3299,7 @@ function TeachingPreview({ latestTeaching }) {
         <h2>章节教学页预览</h2>
       </div>
       {latestTeaching ? (
-        <MarkdownPreview markdown={latestTeaching.markdown} />
+        <MarkdownPreview markdown={latestTeaching.markdown} allowImages />
       ) : (
         <div className="empty">
           还没有教学页。AI 生成内容需要人工检查后再发布或导出。
@@ -3297,11 +3309,11 @@ function TeachingPreview({ latestTeaching }) {
   );
 }
 
-function MarkdownPreview({ markdown }) {
-  return <div className="markdown-preview">{renderMarkdownBlocks(markdown)}</div>;
+function MarkdownPreview({ markdown, allowImages = false }) {
+  return <div className="markdown-preview">{renderMarkdownBlocks(markdown, allowImages)}</div>;
 }
 
-function renderMarkdownBlocks(markdown) {
+function renderMarkdownBlocks(markdown, allowImages = false) {
   const lines = String(markdown || "").split(/\r?\n/);
   const blocks = [];
   let paragraph = [];
@@ -3316,6 +3328,12 @@ function renderMarkdownBlocks(markdown) {
 
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index].trimEnd();
+    const chapterImage = allowImages ? parseChapterImage(line) : null;
+    if (chapterImage) {
+      flushParagraph(`p-${index}`);
+      blocks.push(<ChapterImage key={`${index}-${chapterImage.src}`} {...chapterImage} />);
+      continue;
+    }
     if (!line.trim()) {
       flushParagraph(`p-${index}`);
       continue;
@@ -3370,7 +3388,7 @@ function renderMarkdownBlocks(markdown) {
       blocks.push(
         <details key={`details-${index}`} className="md-details">
           <summary>{parsed.summary}</summary>
-          <div>{renderMarkdownBlocks(parsed.body.join("\n"))}</div>
+          <div>{renderMarkdownBlocks(parsed.body.join("\n"), allowImages)}</div>
         </details>,
       );
       index = parsed.endIndex;
@@ -3383,7 +3401,7 @@ function renderMarkdownBlocks(markdown) {
         <div key={`columns-${index}`} className="md-columns">
           {(parsed.columns.length ? parsed.columns : [[]]).map((column, columnIndex) => (
             <div key={`column-${columnIndex}`} className="md-column">
-              {renderMarkdownBlocks(column.join("\n"))}
+              {renderMarkdownBlocks(column.join("\n"), allowImages)}
             </div>
           ))}
         </div>,
@@ -3397,7 +3415,7 @@ function renderMarkdownBlocks(markdown) {
       blocks.push(
         <aside key={`callout-${index}`} className={`md-callout ${toToneClass(parsed.color)}`}>
           <span>{parsed.icon}</span>
-          <div>{renderMarkdownBlocks(parsed.body.join("\n"))}</div>
+          <div>{renderMarkdownBlocks(parsed.body.join("\n"), allowImages)}</div>
         </aside>,
       );
       index = parsed.endIndex;
@@ -3696,11 +3714,35 @@ function parseQuestionOptions(options) {
     .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean);
-  if (lineItems.length > 1) return lineItems;
+  if (lineItems.length > 1) {
+    const grouped = [];
+    for (const line of lineItems) {
+      if (/^[A-H][.．、]\s*/i.test(line)) grouped.push(line);
+      else if (grouped.length) grouped[grouped.length - 1] += `\n${line}`;
+    }
+    return grouped.length ? grouped : lineItems;
+  }
   const matches = [...value.matchAll(/(?:^|\s)([A-H][\.．、]\s*[\s\S]*?)(?=\s+[A-H][\.．、]\s*|$)/gi)]
     .map((match) => match[1].trim())
     .filter(Boolean);
   return matches.length > 1 ? matches : [value];
+}
+
+function stripQuestionImageLines(value) {
+  return String(value || "").split(/\r?\n/).filter((line) => !parseChapterImage(line)).join("\n").trim();
+}
+
+function imageLinesOnly(value) {
+  return String(value || "").split(/\r?\n/).filter((line) => parseChapterImage(line)).join("\n");
+}
+
+function QuestionContent({ text, className = "" }) {
+  return <div className={`question-content ${className}`}>
+    {String(text || "").split(/\r?\n/).filter(Boolean).map((line, index) => {
+      const image = parseChapterImage(line);
+      return image ? <ChapterImage key={`${index}-${image.src}`} {...image} /> : <p key={index}>{line}</p>;
+    })}
+  </div>;
 }
 
 function parseKnowledgeTags(value) {

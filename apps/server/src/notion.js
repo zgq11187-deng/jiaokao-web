@@ -407,12 +407,12 @@ export async function queryExamQuestionCandidates(limit = 100) {
   return candidates;
 }
 
-export async function readPageMarkdown(pageId) {
+export async function readPageMarkdown(pageId, options = {}) {
   const client = requireNotion();
-  return readBlockChildrenMarkdown(client, pageId);
+  return readBlockChildrenMarkdown(client, pageId, 0, options);
 }
 
-async function readBlockChildrenMarkdown(client, blockId, depth = 0) {
+export async function readBlockChildrenMarkdown(client, blockId, depth = 0, options = {}) {
   // 教学页常见“列 → callout → 题目卡 → 答案折叠”多层嵌套，保留足够深度才能读到边界内题目。
   if (depth > 8) return "";
   const blocks = [];
@@ -428,30 +428,32 @@ async function readBlockChildrenMarkdown(client, blockId, depth = 0) {
   } while (cursor);
   const markdownBlocks = [];
   for (const block of blocks) {
-    const markdown = await blockToMarkdown(client, block, depth);
+    const markdown = await blockToMarkdown(client, block, depth, options);
     if (markdown) markdownBlocks.push(markdown);
   }
   return markdownBlocks.filter(Boolean).join("\n\n");
 }
 
-async function blockToMarkdown(client, block, depth) {
+async function blockToMarkdown(client, block, depth, options) {
   const type = block.type;
   const value = block[type] || {};
+  if (type === "image") return options.onImage ? options.onImage(block) : "";
   const text = value.rich_text?.map((t) => t.plain_text).join("") || "";
   if (!text && type === "divider") return "---";
-  if (type === "heading_1") return `# ${text}`;
-  if (type === "heading_2") return `## ${text}`;
-  if (type === "heading_3") return `### ${text}`;
-  if (type === "bulleted_list_item") return withChildren(client, block, `- ${text}`, depth);
-  if (type === "numbered_list_item") return withChildren(client, block, `1. ${text}`, depth);
+  if (/^heading_[123]$/.test(type)) {
+    const heading = `${"#".repeat(Number(type.slice(-1)))} ${text}`;
+    return options.onImage ? withChildren(client, block, heading, depth, options) : heading;
+  }
+  if (type === "bulleted_list_item") return withChildren(client, block, `- ${text}`, depth, options);
+  if (type === "numbered_list_item") return withChildren(client, block, `1. ${text}`, depth, options);
   if (type === "toggle") {
-    const children = await readNestedChildren(client, block, depth);
+    const children = await readNestedChildren(client, block, depth, options);
     return `<details>\n<summary>${text || "详情"}</summary>\n\n${children}\n</details>`;
   }
   if (type === "callout") {
     const icon = value.icon?.emoji || "💡";
     const color = notionColorToBg(value.color || "default");
-    const children = await readNestedChildren(client, block, depth);
+    const children = await readNestedChildren(client, block, depth, options);
     return `<callout icon="${icon}" color="${color}">\n${[text, children].filter(Boolean).join("\n")}\n</callout>`;
   }
   if (type === "code") {
@@ -467,25 +469,25 @@ async function blockToMarkdown(client, block, depth) {
     const children = await readNestedBlocks(client, block, depth);
     const columns = [];
     for (const column of children.filter((child) => child.type === "column")) {
-      columns.push(await readNestedChildren(client, column, depth));
+      columns.push(await readNestedChildren(client, column, depth, options));
     }
     return `<columns>\n${columns.map((column) => `<column>\n${column}\n</column>`).join("\n")}\n</columns>`;
   }
-  if (type === "column") return readNestedChildren(client, block, depth);
+  if (type === "column") return readNestedChildren(client, block, depth, options);
   // 同步块等容器本身没有 rich_text，但其子块仍可能包含完整教学页。
   // 不要因为父块无文字就丢弃整个子树，否则边界和题目都会无法导入。
   if (!text && !block.has_children) return "";
-  return withChildren(client, block, text, depth);
+  return withChildren(client, block, text, depth, options);
 }
 
-async function withChildren(client, block, markdown, depth) {
-  const children = await readNestedChildren(client, block, depth);
-  return [markdown, children].filter(Boolean).join("\n");
+async function withChildren(client, block, markdown, depth, options) {
+  const children = await readNestedChildren(client, block, depth, options);
+  return [markdown, children].filter(Boolean).join(options.onImage ? "\n\n" : "\n");
 }
 
-async function readNestedChildren(client, block, depth) {
+async function readNestedChildren(client, block, depth, options) {
   if (!block.has_children) return "";
-  return readBlockChildrenMarkdown(client, block.id, depth + 1);
+  return readBlockChildrenMarkdown(client, block.id, depth + 1, options);
 }
 
 async function readNestedBlocks(client, block, depth) {

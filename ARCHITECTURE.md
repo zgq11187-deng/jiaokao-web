@@ -82,6 +82,7 @@ project/
 - `outline_analyses`：A 自动填充考点结果
 - `exam_questions`：B 真题入库结果和 Notion 教学页导入题，包含 `is_archived` 用于老师隐藏题目；隐藏题不进入学生练习、模拟考试和导出题库，但保留历史答题记录
 - `teaching_pages`：C 教学页结果
+- v4 `chapter_images`：教学页图片版本索引（章节、Notion 块、源修改时间、SHA-256、MIME、大小、私有缓存文件）。图片放在数据库同目录的 `chapter-images/`，不通过静态目录公开。备份时与 SQLite 一起保存。阶段一仅教学页，习题图片在阶段二。
 - `generation_logs`：生成流程日志
 
 第一版新增认证与学习相关表：
@@ -140,7 +141,8 @@ project/
 - `GET /api/chapters`：章节列表；老师可取得全部本地章节，老师端默认隐藏 `notion_archived = 1` 且可主动显示；学生只返回未归档且对自己可见的章节（`student_visible = 1` 或在 `chapter_student_access` 中有授权）
 - `GET /api/chapters/:id`：章节详情
 - `POST /api/teacher/sync-chapters-from-notion`：老师手动同步 Notion 章节列表到 SQLite；完整分页后排除回收站和已归档页面，并对账本地 Notion 来源章节及空 `notion_page_id` 的本地记录。空 ID 记录按规范化标题唯一匹配有效页面，匹配成功时补写来源元数据，匹配不到时设为 `notion_archived = 1`、关闭 `student_visible`；同名页面跳过绑定并返回歧义统计。失效页面保留指定学生授权和全部历史数据；恢复页面只清除归档状态并更新元数据，不自动重新开放给学生。接口返回新增、更新、归档、恢复、保留、标题绑定、跳过同名标题和跳过无效页面统计。部署前需确认空 ID 本地章节均应纳入 Notion 管理。
-- `POST /api/teacher/chapters/:id/sync-teaching-page-from-notion`：老师手动同步当前章节 Notion 页面正文到本地教学页缓存
+- `POST /api/teacher/chapters/:id/sync-teaching-page-from-notion`：老师手动同步当前章节 Notion 页面正文到本地教学页缓存；v4 返回兼容 action 加 imageStats/warnings，缓存图片失败保留文字并警告。
+- `GET /api/chapters/:chapterId/images/:imageId`：登录及章节权限校验后读取本地图片版本，校验章节归属、私有路径；private/no-store/nosniff，不是任意 URL 代理。图片下载只允许公网 HTTPS，DNS 固定与逐跳复验、字节类型限制、单图 20 MiB/20 秒、全局并发最多 2、同步图片预算 90 秒。不改变 Agent 默认读取及导出行为。
 - `POST /api/teacher/chapters/:id/show-to-students`：老师将章节开放给所有学生
 - `POST /api/teacher/chapters/:id/hide-from-students`：老师关闭对所有学生的开放（不影响指定学生授权）
 - `GET /api/teacher/chapters/:id/student-access`：老师查看当前章节的指定学生授权列表，只列已批准学生
