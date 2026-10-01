@@ -1,7 +1,7 @@
 # Phase 02 — 习题图片闭环
 
 **Status**: completed
-**Gate**: user-approved — 待用户提交并回填 commit hash
+**Gate**: committed — 用户提交 c81c889dce17479b3254324bb27c5a000681f660
 **目标**: 保留题干、选项、解析图片及历史记录。
 **前置**: Phase 01 用户验收；用户明确要求在阶段一尚未提交时继续阶段二。
 
@@ -20,8 +20,8 @@
 
 - 临时 SQLite + 模拟 Notion 嵌套块：题干、选项、折叠解析图归属；边界外/归属不明图片；失效缓存占位；操作题解析中的转义说明；手动题和歧义匹配跳过；重复导入保留 ID、隐藏状态和历史答题记录。真实 Notion API 与用户原图尚未验证。
 - 浏览器隔离夹具：老师题库预览，学生练习、模考、错题均能显示受保护图片；练习与模考提交前不出现解析图，提交后出现；错题解析保持折叠。浏览器仅有夹具 favicon 404。
-- `node --test apps/server/test/*.test.js`：14/14；`npm run check`、`npm run build`：通过，Vite 大包警告仍在；`git diff --check`：通过。未提交、推送或部署。
-- 用户于 2026-10-01 明确确认阶段二验收完成，验收步骤见 [ACCEPTANCE.md](../../ACCEPTANCE.md)。本阶段代码尚未提交、推送或部署；按 First Flight 规则，用户提交后回填 commit hash，再进入 Phase 03。
+- `node --test apps/server/test/*.test.js`：14/14；`npm run check`、`npm run build`：通过，Vite 大包警告仍在；`git diff --check`：通过。用户已提交，尚未推送或部署。
+- 用户于 2026-10-01 明确确认阶段二验收完成，验收步骤见 [ACCEPTANCE.md](../../ACCEPTANCE.md)。两个阶段代码由用户提交为 c81c889dce17479b3254324bb27c5a000681f660，进入 Phase 03。
 
 ## Notes
 

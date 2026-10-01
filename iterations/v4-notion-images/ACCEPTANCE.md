@@ -1,6 +1,6 @@
 # Notion 图片分阶段验收
 
-阶段一教学页图片和阶段二题库配图均已获用户确认；阶段二于 2026-10-01 验收通过。没有提交、推送或更新腾讯云服务器。
+阶段一教学页图片和阶段二题库配图均已获用户确认；阶段二于 2026-10-01 验收通过。两个阶段代码已由用户提交（c81c889dce17479b3254324bb27c5a000681f660），尚未推送或更新腾讯云服务器。
 
 ## 在本地真实章节验收
 
@@ -48,4 +48,45 @@ node apps/server/test/helpers/image-fixture.js --serve
 - 图片不在静态公开目录，须经登录和章节权限接口读取；索引为 SQLite `chapter_images`。
 - 将缓存目录和 SQLite 一起纳入备份；回滚保留索引表和缓存，不删除历史引用。
 - 本地和服务器各自重新同步、各自下载，不搬运本地账号/授权/答题数据。
-- 本阶段使用临时夹具完成自测；用户已确认阶段二验收通过。待用户提交并回填 commit hash 后进入阶段三回归与部署交接。
+- 本阶段使用临时夹具完成自测；用户已确认阶段二验收通过并提交代码，阶段三回归与部署交接进行中。
+
+## 阶段三：GitHub 与腾讯云交接
+
+两个阶段代码已由用户提交为 `c81c889dce17479b3254324bb27c5a000681f660`。阶段记录补充提交后，先把 `origin/main` 合入 `competition-demo`，检查通过再推送并创建 `competition-demo → main` PR。若合并有冲突，解决并重新检查后再推送；不要强制推送。PR 通过并合并后，以合并后的 `main` 为服务器部署来源。
+
+服务器由用户执行。在 `/var/www/jiaokao` 先运行 `git status --short`；若仅有 `package-lock.json` 的本地修改，使用 `git stash push -m "pre-v4-package-lock" -- package-lock.json` 保留。其他已修改文件须先核对，避免覆盖服务器本地工作。
+
+在服务器备份数据库、环境文件和已有图片缓存：
+
+```bash
+cd /var/www/jiaokao
+umask 077
+backup_dir="/home/ubuntu/jiaokao-backups/v4-images-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$backup_dir"
+db_path=$(node --input-type=module -e 'import {config} from "./apps/server/src/config.js"; process.stdout.write(config.dbPath)')
+test -f "$db_path"
+sqlite3 "$db_path" ".backup '$backup_dir/app.db'"
+cp -p .env "$backup_dir/.env"
+image_dir="$(dirname "$db_path")/chapter-images"
+if test -d "$image_dir"; then cp -a "$image_dir" "$backup_dir/"; fi
+git rev-parse HEAD > "$backup_dir/pre-deploy-commit.txt"
+```
+
+确认备份成功后更新并检查。`git pull --ff-only`、安装、检查或构建失败时停止，不重启 PM2：
+
+```bash
+git fetch origin main
+git switch deploy-main
+git pull --ff-only origin main
+git log -1 --oneline
+npm ci
+npm run check
+npm run build
+pm2 restart jiaokao-server --update-env
+sleep 10
+curl -sS -i http://127.0.0.1:37200/health
+pm2 status
+pm2 logs jiaokao-server --err --lines 30 --nostream --timestamp
+```
+
+健康检查应返回 HTTP 200 和 `{"ok":true,"service":"jiaokao-web-server"}`。然后在老师端先同步目标章节教学页，再导入当前章节习题；确认图片统计、题目数量和老师题库、学生练习、模拟考试、错题页显示。再次导入不能新增重复题，原历史答题记录应保留。线上图片由服务器重新缓存，备份与旧缓存保留到上线验收结束。

@@ -12,9 +12,9 @@
 
 | 阶段 | 目标 | 状态 |
 |---|---|---|
-| 01 teaching-images | 下载、缓存、权限、教学页渲染 | completed — user-approved |
-| 02 question-images | 题目导入与练习渲染 | completed — user-approved，待用户提交 |
-| 03 regression-deploy | 回归及部署交接 | not started |
+| 01 teaching-images | 下载、缓存、权限、教学页渲染 | completed — committed |
+| 02 question-images | 题目导入与练习渲染 | completed — committed |
+| 03 regression-deploy | 回归及部署交接 | in progress |
 
 ## 关键决策
 
@@ -35,6 +35,8 @@
 2026-10-01：阶段二隔离自动测试 14/14、老师与学生四流程浏览器检查、`npm run check/build` 通过；待用户真实 Notion 章节验收。测试配置加载顺序事故已修复且本地测试账号已清理，详见 Phase 02 Notes。
 
 2026-10-01：用户确认阶段二验收完成；Gate 更新为 user-approved。图片功能仍未提交、推送或部署，用户提交后回填 hash，再进入阶段三。
+
+2026-10-01：用户将阶段一和阶段二代码提交为 c81c889dce17479b3254324bb27c5a000681f660；两阶段 Gate 已记为 committed，开始阶段三回归与部署交接。尚未推送、合并或更新服务器。
 
 ## 关联
 
